@@ -2281,6 +2281,7 @@ static void
 gc_mark_all_clear(rb_objspace_t *objspace)
 {
     struct heaps_slot *scan;
+    RVALUE *p, *pend;
 
     if (objspace->heap.sweep_slots) {
         while (objspace->heap.sweep_slots) {
