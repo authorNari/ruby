@@ -2086,7 +2086,7 @@ rb_gc_force_recycle(VALUE p)
 {
     rb_objspace_t *objspace = &rb_objspace;
     GC_PROF_DEC_LIVE_NUM;
-    if (!(RANY(p)->as.basic.flags & FL_MARK)) {
+    if (RBASIC(p)->flags & FL_MARK) {
         RANY(p)->as.free.flags = 0;
     }
     else {
@@ -2280,25 +2280,32 @@ void rb_gc_mark_encodings(void);
 static void
 gc_mark_all_clear(rb_objspace_t *objspace)
 {
-    int i = 0;
-    while (objspace->heap.sweep_slots) {
-        RVALUE *p, *pend;
-        struct heaps_slot *scan = objspace->heap.sweep_slots;
-        p = scan->slot; pend = p + scan->limit;
-        while (p < pend) {
-            if (!(RBASIC(p)->flags & FL_MARK)) {
-                if (p->as.basic.flags && !FL_TEST(p, FL_FINALIZE)) {
-                    obj_free(objspace, (VALUE)p);
-                    VALGRIND_MAKE_MEM_UNDEFINED((void*)p, sizeof(RVALUE));
-                    p->as.free.flags = 0;
+    struct heaps_slot *scan;
+
+    if (objspace->heap.sweep_slots) {
+        while (objspace->heap.sweep_slots) {
+            scan = objspace->heap.sweep_slots;
+            p = scan->slot; pend = p + scan->limit;
+            while (p < pend) {
+                if (!(RBASIC(p)->flags & FL_MARK)) {
+                    if (p->as.basic.flags && !FL_TEST(p, FL_FINALIZE)) {
+                        obj_free(objspace, (VALUE)p);
+                        VALGRIND_MAKE_MEM_UNDEFINED((void*)p, sizeof(RVALUE));
+                        p->as.free.flags = 0;
+                    }
                 }
+                else if (RBASIC(p)->flags != FL_MARK) {
+                    p->as.basic.flags &= ~FL_MARK;
+                }
+                p++;
             }
-            else if (RBASIC(p)->flags != FL_MARK) {
-                p->as.basic.flags &= ~FL_MARK;
-            }
-            p++;
+            objspace->heap.sweep_slots = objspace->heap.sweep_slots->next;
         }
-        objspace->heap.sweep_slots = objspace->heap.sweep_slots->next;
+        p = deferred_final_list;
+        while(p) {
+            p->as.free.flags |= FL_MARK;
+            p = p->as.free.next;
+        }
     }
 }
 
