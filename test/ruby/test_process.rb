@@ -236,6 +236,17 @@ class TestProcess < Test::Unit::TestCase
       system({"F=O"=>"BAR"}, *TRUECOMMAND)
     }
 
+    with_tmpchdir {|d|
+      prog = "#{d}/notexist"
+      e = assert_raise(Errno::ENOENT) {
+        Process.wait Process.spawn({"FOO"=>"BAR"}, prog)
+      }
+      assert_equal(prog, e.message.sub(/.* - /, ''))
+      e = assert_raise(Errno::ENOENT) {
+        Process.wait Process.spawn({"FOO"=>"BAR"}, [prog, "blar"])
+      }
+      assert_equal(prog, e.message.sub(/.* - /, ''))
+    }
     h = {}
     cmd = [h, RUBY]
     (ENV.keys + MANDATORY_ENVS).each do |k|
@@ -1054,6 +1065,9 @@ class TestProcess < Test::Unit::TestCase
       Thread.new { sleep 1; Process.kill(:SIGQUIT, pid) }
       Process.wait(pid)
       s = $?
+      assert_equal([false, true, false],
+                   [s.exited?, s.signaled?, s.stopped?],
+                   "[s.exited?, s.signaled?, s.stopped?]")
       assert_send(
         [["#<Process::Status: pid #{ s.pid } SIGQUIT (signal #{ s.termsig })>",
           "#<Process::Status: pid #{ s.pid } SIGQUIT (signal #{ s.termsig }) (core dumped)>"],

@@ -1,3 +1,75 @@
+Wed May 26 20:19:22 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* random.c (random_rand): add the result of random to the
+	  beginning of range, not the opposite.  [ruby-dev:41415]
+
+Wed May 26 19:55:33 2010  NAKAMURA Usaku  <usa@ruby-lang.org>
+
+	* file.c (file_expand_path): revert a part of r22392. it's commit miss.
+
+Wed May 26 18:40:23 2010  Masaya Tarui  <tarui@ruby-lang.org>
+
+	* test/rinda/test_rinda.rb (TupleSpaceTest, TupleSpaceProxyTest):
+	  kill a used thread at teardown.  [ruby-dev:41397]
+
+Wed May 26 12:08:06 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* random.c (random_rand): subtraction method of non-numeric can
+	  return Float.  [ruby-dev:41410]
+
+Wed May 26 11:50:09 2010  Eric Hodel  <drbrain@segment7.net>
+
+	* marshal.c (Init_marshal): document marshal_dump and marshal_load.
+
+Wed May 26 10:35:37 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* configure.in (rb_cv_large_fd_select): needed on mingw, even
+	  though fd_mask is not available.  [ruby-core:30401]
+
+Tue May 25 14:00:51 2010  NARUSE, Yui  <naruse@ruby-lang.org>
+
+	* regparse.c (add_code_range_to_buf0): fix false negative
+	  warning when given range is just before previous range.
+	  [ruby-dev:41406]
+
+Tue May 25 16:37:39 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* misc/ruby-style.el (ruby-style-version): take revision if
+	  keyword is expanded. [ruby-dev:41408]
+
+Tue May 25 13:26:49 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* include/ruby/vm.h, include/ruby/encoding.h: add external
+	  linkage.
+
+Tue May 25 01:46:49 2010  Yusuke Endoh  <mame@tsg.ne.jp>
+
+	* vm_eval.c (rb_f_caller): update rdoc.  a patch from Nobuhiro IMAI
+	  <nov at yo.rim.or.jp> in [ruby-dev:41387].
+
+Mon May 24 23:04:41 2010  Tanaka Akira  <akr@fsij.org>
+
+	* error.c: fix wrong exception class name in rdoc.
+
+Mon May 24 19:00:34 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* parse.y (warn_balanced, parser_yylex): no warnings after closing
+	  parens.
+
+Mon May 24 12:52:44 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* common.mk (change), tool/change_maker.rb: make a brief template
+	  for ChangeLog.
+
+Mon May 24 09:19:59 2010  NAKAMURA Usaku  <usa@ruby-lang.org>
+
+	* gc.c (gc_sweep): suppress a warning on VC.
+
+Mon May 24 08:16:02 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
+
+	* process.c (rb_f_spawn): use correct command name for the error
+	  message.  [ruby-dev:41395]
+
 Sun May 23 17:48:39 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 
 	* ext/openssl/lib/openssl/x509-internal.rb, lib/forwardable.rb,
@@ -207,7 +279,7 @@ Sun May 16 21:14:04 2010  Yuki Sonoda (Yugui)  <yugui@yugui.jp>
 
 Sun May 16 17:16:09 2010  Yusuke Endoh  <mame@tsg.ne.jp>
 
-	* proc.c (proc_binding): don't propagative filename and line_no of
+	* proc.c (proc_binding): don't propagate filename and line_no of
 	  binding that is created from C level.  [ruby-dev:41322]
 
 	* vm_eval.c (eval_string_with_cref): ditto.
@@ -425,7 +497,7 @@ Mon May 10 06:59:19 2010  NARUSE, Yui  <naruse@ruby-lang.org>
 
 Mon May 10 03:36:56 2010  Yusuke Endoh  <mame@tsg.ne.jp>
 
-	* vm_eval.c (eval_string_with_cref): propagative filename and line_no
+	* vm_eval.c (eval_string_with_cref): propagate filename and line_no
 	  of binding.  [ruby-dev:38767] [ruby-core:28307]
 
 	* vm_core.h (rb_binding_t), proc.c: add filename and line_no fields to
@@ -535,7 +607,7 @@ Sat May  8 23:09:44 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 	* NEWS (io/console): IO#noecho and IO#raw without block are
 	  obsolete already.  [ruby-dev:41226]
 
-	* ext/io/console/console.c (ttymode): save dupped file descriptors
+	* ext/io/console/console.c (ttymode): save duped file descriptors
 	  and restore tty modes using them, so that original modes can be
 	  restored even if original fds are closed.  [ruby-dev:41225]
 
@@ -899,7 +971,7 @@ Sat May  1 00:14:47 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 
 Fri Apr 30 22:46:27 2010  Marc-Andre Lafortune  <ruby-core@marc-andre.ca>
 
-	* math.c: Math::DomainError < StandardException [ruby-core:29855]
+	* math.c: Math::DomainError < StandardError [ruby-core:29855]
 
 Fri Apr 30 21:40:36 2010  Nobuyoshi Nakada  <nobu@ruby-lang.org>
 
@@ -10977,7 +11049,7 @@ Fri Jul  3 21:07:29 2009  Tadayoshi Funaba  <tadf@dotrb.org>
 
 Fri Jul  3 19:48:40 2009  Tadayoshi Funaba  <tadf@dotrb.org>
 
-	* complex.c: undef-ed shome methods.  [ruby-core:24110]
+	* complex.c: undef-ed some methods.  [ruby-core:24110]
 
 	* complex.c (Numeric#arg): NaN for NaN.  [ruby-core:24116]
 

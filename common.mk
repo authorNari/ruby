@@ -740,7 +740,7 @@ prelude.c: $(srcdir)/tool/compile_prelude.rb $(RBCONFIG) $(srcdir)/lib/rubygems/
 golf_prelude.c: $(srcdir)/tool/compile_prelude.rb $(RBCONFIG) $(srcdir)/prelude.rb $(srcdir)/golf_prelude.rb $(PREP)
 	$(COMPILE_PRELUDE) $(srcdir)/golf_prelude.rb $@
 
-prereq: incs srcs preludes
+prereq: incs srcs preludes PHONY
 
 preludes: {$(VPATH)}miniprelude.c
 preludes: {$(srcdir)}golf_prelude.c
@@ -816,6 +816,9 @@ info-libruby_so:
 info-arch:
 	@echo arch=$(arch)
 
+change: PHONY
+	$(BASERUBY) -C "$(srcdir)" ./tool/change_maker.rb $(CHANGES) > change.log
+
 help: PHONY
 	@echo "                Makefile of Ruby"
 	@echo ""
@@ -839,6 +842,7 @@ help: PHONY
 	@echo "  install:         install all ruby distributions"
 	@echo "  install-nodoc:   install without rdoc"
 	@echo "  clean:           clean built objects"
+	@echo "  change:          make change log template"
 	@echo "  golf:            for golfers"
 	@echo ""
 	@echo "see DeveloperHowto for more detail: "
