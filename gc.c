@@ -1984,6 +1984,7 @@ before_gc_sweep(rb_objspace_t *objspace, size_t *free_min)
 static void
 after_gc_sweep(rb_objspace_t *objspace)
 {
+    rb_thread_t *th = GET_THREAD();
     GC_PROF_SET_MALLOC_INFO;
 
     if (malloc_increase > malloc_limit) {
@@ -2524,22 +2525,20 @@ rb_objspace_each_objects(int (*callback)(void *vstart, void *vend,
     RVALUE *membase = 0;
     RVALUE *pstart, *pend;
     rb_objspace_t *objspace = &rb_objspace;
-    struct heaps_slot *slot;
     volatile VALUE v;
 
     i = 0;
     while (i < heaps_used) {
-        slot = objspace->heap.sorted[i].slot;
-	while (0 < i && (uintptr_t)membase < (uintptr_t)slot->membase)
+	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1].slot->membase)
 	  i--;
-	while (i < heaps_used && (uintptr_t)slot->membase <= (uintptr_t)membase )
+	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i].slot->membase <= (uintptr_t)membase )
 	  i++;
 	if (heaps_used <= i)
 	  break;
-	membase = slot->membase;
+	membase = objspace->heap.sorted[i].slot->membase;
 
-	pstart = slot->slot;
-	pend = pstart + slot->limit;
+	pstart = objspace->heap.sorted[i].slot->slot;
+	pend = pstart + objspace->heap.sorted[i].slot->limit;
 
 	for (; pstart != pend; pstart++) {
 	    if (pstart->as.basic.flags) {
