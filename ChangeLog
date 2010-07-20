@@ -1,3 +1,9 @@
+Tue Jul 20 14:21:38 2010  Narihiro Nakamura  <authorNari@gmail.com>
+
+	* gc.c: don't call after_gc_sweep() after when garbage_collect()
+	  was called, because rb_sweep_method_entry() free live unlinked
+	  method entries. [ruby-core:31169]
+
 Wed Jun 15 21:00:47 2011  Martin Bosslet  <Martin.Bosslet@googlemail.com>
 
 	* test/openssl/test_config.rb: execute based on the existence of the
