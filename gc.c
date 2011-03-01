@@ -50,6 +50,18 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) /* empty */
 #endif
 
+#ifdef GC_DEBUG
+#include <assert.h>
+#include <debug.h>
+#define gc_assert(expect, fail_message) do {\
+  if(!expect) {\
+    gc_debug(fail_message);\
+    assert(expect);\
+  }\
+}while(0);
+#define gc_debug ruby_debug_printf
+#endif
+
 int rb_io_fptr_finalize(struct rb_io_t*);
 
 #define rb_setjmp(env) RUBY_SETJMP(env)
@@ -3538,6 +3550,13 @@ gc_profile_total_time(VALUE self)
     return DBL2NUM(time);
 }
 
+#ifdef GC_DEBUG
+VALUE
+rb_gc_test(void)
+{
+    return Qnil;
+}
+#endif
 
 /*
  *  The <code>GC</code> module provides an interface to Ruby's mark and
@@ -3552,6 +3571,9 @@ Init_GC(void)
     VALUE rb_mProfiler;
 
     rb_mGC = rb_define_module("GC");
+#ifdef GC_DEBUG
+    rb_define_singleton_method(rb_mGC, "test", rb_gc_test, 0);
+#endif
     rb_define_singleton_method(rb_mGC, "start", rb_gc_start, 0);
     rb_define_singleton_method(rb_mGC, "enable", rb_gc_enable, 0);
     rb_define_singleton_method(rb_mGC, "disable", rb_gc_disable, 0);
