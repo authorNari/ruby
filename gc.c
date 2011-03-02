@@ -325,6 +325,25 @@ struct gc_list {
 
 #define CALC_EXACT_MALLOC_SIZE 0
 
+// Implementation of Parallel Marking is Arora's Task Stealing Deque Algorithm.
+// http://doi.acm.org/10.1145/277651.277678
+#ifdef __LP64__
+typedef uint16_t half_word;
+#else
+typedef uint32_t half_word;
+#endif
+struct deque_age {
+    half_word tag;
+    half_word top;
+};
+
+#define GC_DEQUE_SIZE (1 << 17)
+struct deque {
+    VALUE datas[GC_DEQUE_SIZE];
+    size_t bottom;
+    struct deque_age age;
+};
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -364,6 +383,10 @@ typedef struct rb_objspace {
 	VALUE *ptr;
 	int overflow;
     } markstack;
+    struct {
+        struct deque **deque;
+        size_t length;
+    } deque_set;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -1078,6 +1101,22 @@ assign_heap_slot(rb_objspace_t *objspace)
 	p++;
     }
 }
+
+// TODO: want to guess the cpu processer number.
+static size_t num_worker = 8;
+
+static void
+init_deque_set(rb_objspace_t *objspace)
+{
+    void *p;
+
+    p = malloc(sizeof(struct deque) * num_worker);
+    if (!p) {
+        return rb_memerror();
+    }
+    objspace->deque_set.deque = (struct deque **)p;
+    objspace->deque_set.length = num_worker;
+};
 
 static void
 add_heap_slots(rb_objspace_t *objspace, size_t add)
@@ -2596,6 +2635,7 @@ void
 Init_heap(void)
 {
     init_heap(&rb_objspace);
+    init_deque_set(&rb_objspace);
 }
 
 static VALUE
