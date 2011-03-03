@@ -50,15 +50,17 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) /* empty */
 #endif
 
+#define GC_DEBUG 1
+
 #ifdef GC_DEBUG
 #include <assert.h>
 #include <debug.h>
-#define gc_assert(expect, fail_message) do {\
-  if(!expect) {\
-    gc_debug(fail_message);\
-    assert(expect);\
+#define gc_assert(expect, format, ...) do {\
+  if(!(expect)) {                    \
+    gc_debug(format, ##__VA_ARGS__);\
   }\
-}while(0);
+  assert(expect);\
+}while(0)
 #define gc_debug ruby_debug_printf
 #endif
 
@@ -328,18 +330,20 @@ struct gc_list {
 // Implementation of Parallel Marking is Arora's Task Stealing Deque Algorithm.
 // http://doi.acm.org/10.1145/277651.277678
 #ifdef __LP64__
-typedef uint16_t half_word;
-#else
 typedef uint32_t half_word;
+#else
+typedef uint16_t half_word;
 #endif
 struct deque_age {
     half_word tag;
     half_word top;
 };
 
-#define GC_DEQUE_SIZE (1 << 17)
+#define _GC_DEQUE_SIZE (1 << 14)
+static const size_t GC_DEQUE_SIZE  = _GC_DEQUE_SIZE;
+static const size_t GC_DEQUE_SIZE_MASK = _GC_DEQUE_SIZE - 1;
 struct deque {
-    VALUE datas[GC_DEQUE_SIZE];
+    VALUE datas[_GC_DEQUE_SIZE];
     size_t bottom;
     struct deque_age age;
 };
@@ -384,7 +388,7 @@ typedef struct rb_objspace {
 	int overflow;
     } markstack;
     struct {
-        struct deque **deque;
+        struct deque *deques;
         size_t length;
     } deque_set;
     struct {
@@ -1105,6 +1109,35 @@ assign_heap_slot(rb_objspace_t *objspace)
 // TODO: want to guess the cpu processer number.
 static size_t num_worker = 8;
 
+static size_t
+deque_increment(rb_objspace_t *objspace, size_t index)
+{
+    return (index + 1) & GC_DEQUE_SIZE_MASK;
+}
+
+static size_t
+deque_decrement(rb_objspace_t *objspace, size_t index)
+{
+    return (index - 1) & GC_DEQUE_SIZE_MASK;
+}
+
+static size_t
+deque_size(rb_objspace_t *objspace, struct deque *deque)
+{
+    size_t size;
+
+    size = (deque->bottom - deque->age.top) & GC_DEQUE_SIZE_MASK;
+    gc_assert((deque->bottom >= deque->age.top || size == GC_DEQUE_SIZE_MASK),
+              "size == GC_DEQUE_SIZE_MASK at top over bottom. top = %d, bottom = %d\n",
+              deque->age.top, deque->bottom);
+    gc_assert((size != 0 || deque->bottom == deque->age.top),
+              "size == 0 at bottom == top\n");
+
+    if (size == GC_DEQUE_SIZE_MASK)
+        return 0;
+    return size;
+}
+
 static void
 init_deque_set(rb_objspace_t *objspace)
 {
@@ -1114,7 +1147,7 @@ init_deque_set(rb_objspace_t *objspace)
     if (!p) {
         return rb_memerror();
     }
-    objspace->deque_set.deque = (struct deque **)p;
+    objspace->deque_set.deques = (struct deque *)p;
     objspace->deque_set.length = num_worker;
 };
 
@@ -3594,6 +3627,26 @@ gc_profile_total_time(VALUE self)
 VALUE
 rb_gc_test(void)
 {
+    rb_objspace_t *objspace = &rb_objspace;
+    struct deque *deque = &objspace->deque_set.deques[0];
+
+    /* deque size test */
+    deque->age.top = GC_DEQUE_SIZE_MASK;
+    deque->age.top = deque_increment(objspace, deque->age.top);
+    gc_assert(deque->age.top == 0, "%d\n", deque->age.top);
+
+    deque->age.top = 0;
+    deque->age.top = deque_decrement(objspace, deque->age.top);
+    gc_assert(deque->age.top == GC_DEQUE_SIZE_MASK, "%d %d\n", deque->age.top, GC_DEQUE_SIZE_MASK);
+
+    deque->age.top = 0;
+    deque->bottom = 0;
+    gc_assert(deque_size(objspace, deque) == 0, "not eq");
+
+    deque->age.top = 1;
+    deque->bottom = 0;
+    gc_assert(deque_size(objspace, deque) == 0, "not eq");
+
     return Qnil;
 }
 #endif
