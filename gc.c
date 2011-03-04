@@ -342,6 +342,7 @@ struct deque_age {
 #define _GC_DEQUE_SIZE (1 << 14)
 static const size_t GC_DEQUE_SIZE  = _GC_DEQUE_SIZE;
 static const size_t GC_DEQUE_SIZE_MASK = _GC_DEQUE_SIZE - 1;
+static const size_t GC_DEQUE_MAX = _GC_DEQUE_SIZE - 2;
 struct deque {
     VALUE datas[_GC_DEQUE_SIZE];
     size_t bottom;
@@ -1108,34 +1109,73 @@ assign_heap_slot(rb_objspace_t *objspace)
 
 // TODO: want to guess the cpu processer number.
 static size_t num_worker = 8;
+static size_t size_deque(size_t bottom, size_t top);
 
 static size_t
-deque_increment(rb_objspace_t *objspace, size_t index)
+deque_increment(size_t index)
 {
     return (index + 1) & GC_DEQUE_SIZE_MASK;
 }
 
 static size_t
-deque_decrement(rb_objspace_t *objspace, size_t index)
+deque_decrement(size_t index)
 {
     return (index - 1) & GC_DEQUE_SIZE_MASK;
 }
 
 static size_t
-deque_size(rb_objspace_t *objspace, struct deque *deque)
+raw_size_deque(size_t bottom, size_t top)
 {
     size_t size;
 
-    size = (deque->bottom - deque->age.top) & GC_DEQUE_SIZE_MASK;
-    gc_assert((deque->bottom >= deque->age.top || size == GC_DEQUE_SIZE_MASK),
+    size = (bottom - top) & GC_DEQUE_SIZE_MASK;
+    gc_assert((bottom >= top || size == GC_DEQUE_SIZE_MASK),
               "size == GC_DEQUE_SIZE_MASK at top over bottom. top = %d, bottom = %d\n",
-              deque->age.top, deque->bottom);
-    gc_assert((size != 0 || deque->bottom == deque->age.top),
-              "size == 0 at bottom == top\n");
+              top, bottom);
+    gc_assert((size != 0 || bottom == top), "size == 0 at bottom == top\n");
+    return size;
+}
 
+static size_t
+size_deque(size_t bottom, size_t top)
+{
+    size_t size;
+
+    size = raw_size_deque(bottom, top);
     if (size == GC_DEQUE_SIZE_MASK)
         return 0;
     return size;
+}
+
+static int
+is_full_deque(size_t bottom, size_t top)
+{
+    gc_assert(size_deque(bottom, top) < GC_DEQUE_SIZE,
+              "deque size out of range.");
+    if (size_deque(bottom, top) == GC_DEQUE_MAX) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static int
+push_bottom(struct deque *deque, VALUE data)
+{
+    size_t local_bottom;
+    half_word top;
+
+    local_bottom = deque->bottom;
+    gc_assert((local_bottom >=0) && (local_bottom < GC_DEQUE_SIZE),
+              "local_bottom out of range");
+    top = deque->age.top;
+    gc_assert(size_deque(local_bottom, top) < GC_DEQUE_SIZE, "size out of range");
+    if (!is_full_deque(local_bottom, top)) {
+        gc_assert(size_deque(local_bottom, top) < GC_DEQUE_MAX, "size out of range");
+        deque->datas[local_bottom] = data;
+        deque->bottom = deque_increment(local_bottom);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 static void
@@ -3629,23 +3669,58 @@ rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     struct deque *deque = &objspace->deque_set.deques[0];
+    int res;
 
     /* deque size test */
     deque->age.top = GC_DEQUE_SIZE_MASK;
-    deque->age.top = deque_increment(objspace, deque->age.top);
+    deque->age.top = deque_increment(deque->age.top);
     gc_assert(deque->age.top == 0, "%d\n", deque->age.top);
 
     deque->age.top = 0;
-    deque->age.top = deque_decrement(objspace, deque->age.top);
+    deque->age.top = deque_decrement(deque->age.top);
     gc_assert(deque->age.top == GC_DEQUE_SIZE_MASK, "%d %d\n", deque->age.top, GC_DEQUE_SIZE_MASK);
 
     deque->age.top = 0;
     deque->bottom = 0;
-    gc_assert(deque_size(objspace, deque) == 0, "not eq");
+    gc_assert(size_deque(deque->bottom, deque->age.top) == 0, "not eq\n");
 
     deque->age.top = 1;
     deque->bottom = 0;
-    gc_assert(deque_size(objspace, deque) == 0, "not eq");
+    gc_assert(size_deque(deque->bottom, deque->age.top) == 0, "not eq\n");
+
+    /* is_full_deque test */
+    deque->age.top = 0;
+    deque->bottom = GC_DEQUE_MAX;
+    gc_assert(is_full_deque(deque->bottom, deque->age.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+
+    deque->age.top = 1;
+    deque->bottom = 0;
+    gc_assert(!is_full_deque(deque->bottom, deque->age.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+
+    deque->age.top = 0;
+    deque->bottom = GC_DEQUE_MAX - 1;
+    gc_assert(!is_full_deque(deque->bottom, deque->age.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+
+    /* push_bottom test */
+    deque->age.top = 0;
+    deque->bottom = 0;
+    res = push_bottom(deque, 1);
+    gc_assert(res, "false?");
+    gc_assert(deque->datas[0] == 1, "datas[0] %p\n", deque->datas[0]);
+    gc_assert(deque->bottom == 1, "bottom %d\n", deque->bottom);
+    res = push_bottom(deque, 2);
+    gc_assert(res, "false?");
+    gc_assert(deque->datas[1] == 2, "datas[1] %p\n", deque->datas[1]);
+    res = push_bottom(deque, 2);
+    gc_assert(res, "false?");
+    gc_assert(deque->datas[1] == 2, "datas[1] %p\n", deque->datas[1]);
+    deque->age.top = 0;
+    deque->bottom = GC_DEQUE_MAX;
+    res = push_bottom(deque, 2);
+    gc_assert(!res, "true?");
 
     return Qnil;
 }
