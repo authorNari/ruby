@@ -1158,6 +1158,22 @@ is_full_deque(size_t bottom, size_t top)
     return FALSE;
 }
 
+#define GCC_VERSION_SINCE(major, minor, patchlevel) \
+  (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
+   ((__GNUC__ > (major)) ||  \
+    (__GNUC__ == (major) && __GNUC_MINOR__ > (minor)) || \
+    (__GNUC__ == (major) && __GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))
+
+static VALUE
+atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
+{
+#if GCC_VERSION_SINCE(4,1,2)
+    return __sync_val_compare_and_swap(addr, old, new);
+#else
+    /* TODO: support for not GCC */
+#endif
+}
+
 static int
 push_bottom(struct deque *deque, VALUE data)
 {
