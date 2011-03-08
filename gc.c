@@ -334,9 +334,12 @@ typedef uint32_t half_word;
 #else
 typedef uint16_t half_word;
 #endif
-struct deque_age {
-    half_word tag;
-    half_word top;
+union deque_age {
+    VALUE data;
+    struct {
+        half_word tag;
+        half_word top;
+    } fields;
 };
 
 #define _GC_DEQUE_SIZE (1 << 14)
@@ -346,7 +349,7 @@ static const size_t GC_DEQUE_MAX = _GC_DEQUE_SIZE - 2;
 struct deque {
     VALUE datas[_GC_DEQUE_SIZE];
     size_t bottom;
-    struct deque_age age;
+    union deque_age age;
 };
 
 typedef struct rb_objspace {
@@ -1158,6 +1161,15 @@ is_full_deque(size_t bottom, size_t top)
     return FALSE;
 }
 
+static int
+is_empty_deque(size_t bottom, size_t top)
+{
+    if (size_deque(bottom, top) == 0) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
 #define GCC_VERSION_SINCE(major, minor, patchlevel) \
   (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
    ((__GNUC__ > (major)) ||  \
@@ -1174,6 +1186,17 @@ atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 #endif
 }
 
+static void
+atomic_deque_decrement_and_fetch(size_t *ptr, size_t index)
+{
+#if GCC_VERSION_SINCE(4,1,2)
+    __sync_sub_and_fetch(ptr, 1);
+    __sync_and_and_fetch(ptr, GC_DEQUE_SIZE_MASK);
+#else
+    /* TODO: support for not GCC */
+#endif
+}
+
 static int
 push_bottom(struct deque *deque, VALUE data)
 {
@@ -1183,7 +1206,7 @@ push_bottom(struct deque *deque, VALUE data)
     local_bottom = deque->bottom;
     gc_assert((local_bottom >=0) && (local_bottom < GC_DEQUE_SIZE),
               "local_bottom out of range");
-    top = deque->age.top;
+    top = deque->age.fields.top;
     gc_assert(size_deque(local_bottom, top) < GC_DEQUE_SIZE, "size out of range");
     if (!is_full_deque(local_bottom, top)) {
         gc_assert(size_deque(local_bottom, top) < GC_DEQUE_MAX, "size out of range");
@@ -1191,6 +1214,56 @@ push_bottom(struct deque *deque, VALUE data)
         deque->bottom = deque_increment(local_bottom);
         return TRUE;
     }
+    return FALSE;
+}
+
+static int
+pop_bottom(struct deque *deque, VALUE *data)
+{
+    union deque_age old_age, new_age, res_age;
+    size_t local_bottom, size;
+
+    old_age = deque->age;
+    local_bottom = deque->bottom;
+    gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+              "bottom over than top. Or over than GC_DEQUE_MAX.");
+
+    if (is_empty_deque(local_bottom, old_age.fields.top))
+        return FALSE;
+
+    /* use memory barrier */
+    atomic_deque_decrement_and_fetch(&local_bottom, local_bottom);
+    deque->bottom = local_bottom;
+
+    *data = deque->datas[local_bottom];
+    /* must second read of age after local_bottom decremented.
+       The local_bottom decrement is lock on. */
+    old_age = deque->age;
+    if (size_deque(local_bottom, old_age.fields.top) > 0) {
+        gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+                  "bottom over than top. Or over than GC_DEQUE_MAX.");
+        return TRUE;
+    }
+
+    /* only one data in deque */
+    deque->bottom = 0;
+    new_age.fields.top = 0;
+    new_age.fields.tag = old_age.fields.tag + 1;
+    if (local_bottom == old_age.fields.top) {
+        res_age.data = atomic_compxchg_ptr((VALUE *)&deque->age.data,
+                                           (VALUE)old_age.data,
+                                           (VALUE)new_age.data);
+        if (res_age.data == old_age.data) {
+            /* before pop_top() */
+            gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+                      "bottom over than top. Or over than GC_DEQUE_MAX.");
+            return TRUE;
+        }
+    }
+    /* after pop_top() */
+    deque->age = new_age;
+    gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+                      "bottom over than top. Or over than GC_DEQUE_MAX.");
     return FALSE;
 }
 
@@ -3688,40 +3761,40 @@ rb_gc_test(void)
     int res;
 
     /* deque size test */
-    deque->age.top = GC_DEQUE_SIZE_MASK;
-    deque->age.top = deque_increment(deque->age.top);
-    gc_assert(deque->age.top == 0, "%d\n", deque->age.top);
+    deque->age.fields.top = GC_DEQUE_SIZE_MASK;
+    deque->age.fields.top = deque_increment(deque->age.fields.top);
+    gc_assert(deque->age.fields.top == 0, "%d\n", deque->age.fields.top);
 
-    deque->age.top = 0;
-    deque->age.top = deque_decrement(deque->age.top);
-    gc_assert(deque->age.top == GC_DEQUE_SIZE_MASK, "%d %d\n", deque->age.top, GC_DEQUE_SIZE_MASK);
+    deque->age.fields.top = 0;
+    deque->age.fields.top = deque_decrement(deque->age.fields.top);
+    gc_assert(deque->age.fields.top == GC_DEQUE_SIZE_MASK, "%d %d\n", deque->age.fields.top, GC_DEQUE_SIZE_MASK);
 
-    deque->age.top = 0;
+    deque->age.fields.top = 0;
     deque->bottom = 0;
-    gc_assert(size_deque(deque->bottom, deque->age.top) == 0, "not eq\n");
+    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == 0, "not eq\n");
 
-    deque->age.top = 1;
+    deque->age.fields.top = 1;
     deque->bottom = 0;
-    gc_assert(size_deque(deque->bottom, deque->age.top) == 0, "not eq\n");
+    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == 0, "not eq\n");
 
     /* is_full_deque test */
-    deque->age.top = 0;
+    deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX;
-    gc_assert(is_full_deque(deque->bottom, deque->age.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+    gc_assert(is_full_deque(deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
 
-    deque->age.top = 1;
+    deque->age.fields.top = 1;
     deque->bottom = 0;
-    gc_assert(!is_full_deque(deque->bottom, deque->age.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+    gc_assert(!is_full_deque(deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
 
-    deque->age.top = 0;
+    deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX - 1;
-    gc_assert(!is_full_deque(deque->bottom, deque->age.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.top));
+    gc_assert(!is_full_deque(deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
 
     /* push_bottom test */
-    deque->age.top = 0;
+    deque->age.fields.top = 0;
     deque->bottom = 0;
     res = push_bottom(deque, 1);
     gc_assert(res, "false?");
@@ -3733,10 +3806,28 @@ rb_gc_test(void)
     res = push_bottom(deque, 2);
     gc_assert(res, "false?");
     gc_assert(deque->datas[1] == 2, "datas[1] %p\n", deque->datas[1]);
-    deque->age.top = 0;
+    deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX;
     res = push_bottom(deque, 2);
     gc_assert(!res, "true?");
+
+    /* is_empty */
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    res = is_empty_deque(deque->bottom, deque->age.fields.top);
+    gc_assert(res == TRUE, "res %d\n", res);
+    deque->bottom = 1;
+    res = is_empty_deque(deque->bottom, deque->age.fields.top);
+    gc_assert(res == FALSE, "res %d\n", res);
+
+    /* atomic_deque_decrement_and_fetch */
+    res = 1;
+    atomic_deque_decrement_and_fetch(&res, res);
+    gc_assert(res == 0, "res %d\n", res);
+    atomic_deque_decrement_and_fetch(&res, res);
+    gc_assert(res == GC_DEQUE_SIZE_MASK, "res %d\n", res);
+
+    /* pop_bottom test :TODO */
 
     return Qnil;
 }
