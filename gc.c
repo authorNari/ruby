@@ -3759,6 +3759,7 @@ rb_gc_test(void)
     rb_objspace_t *objspace = &rb_objspace;
     struct deque *deque = &objspace->deque_set.deques[0];
     int res;
+    VALUE data;
 
     /* deque size test */
     deque->age.fields.top = GC_DEQUE_SIZE_MASK;
@@ -3827,7 +3828,29 @@ rb_gc_test(void)
     atomic_deque_decrement_and_fetch(&res, res);
     gc_assert(res == GC_DEQUE_SIZE_MASK, "res %d\n", res);
 
-    /* pop_bottom test :TODO */
+    /* pop_bottom test */
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    push_bottom(deque, 1);
+    push_bottom(deque, 2);
+    res = pop_bottom(deque, &data);
+    gc_assert(res == TRUE, "fail\n");
+    gc_assert(data == 2, "data %d\n", data);
+
+    res = pop_bottom(deque, &data);
+    /* pop_bottom win */
+    gc_assert(res == TRUE, "fail\n");
+    gc_assert(data == 1, "data %d\n", data);
+    gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
+    gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
+    /* pop_bottom lose
+    gc_assert(res == FALSE, "fail\n");
+    */
+
+    res = pop_bottom(deque, &data);
+    data = 2;
+    gc_assert(res == FALSE, "fail\n");
+    gc_assert(data == 2, "data %d\n", data);
 
     return Qnil;
 }
