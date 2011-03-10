@@ -1132,9 +1132,6 @@ raw_size_deque(size_t bottom, size_t top)
     size_t size;
 
     size = (bottom - top) & GC_DEQUE_SIZE_MASK;
-    gc_assert((bottom >= top || size == GC_DEQUE_SIZE_MASK),
-              "size == GC_DEQUE_SIZE_MASK at top over bottom. top = %d, bottom = %d\n",
-              top, bottom);
     gc_assert((size != 0 || bottom == top), "size == 0 at bottom == top\n");
     return size;
 }
@@ -1226,7 +1223,7 @@ pop_bottom(struct deque *deque, VALUE *data)
     old_age = deque->age;
     local_bottom = deque->bottom;
     gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
-              "bottom over than top. Or over than GC_DEQUE_MAX.");
+              "bottom == (top - 1)");
 
     if (is_empty_deque(local_bottom, old_age.fields.top))
         return FALSE;
@@ -1241,13 +1238,12 @@ pop_bottom(struct deque *deque, VALUE *data)
     old_age = deque->age;
     if (size_deque(local_bottom, old_age.fields.top) > 0) {
         gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
-                  "bottom over than top. Or over than GC_DEQUE_MAX.");
+                  "bottom == (top - 1)");
         return TRUE;
     }
 
     /* only one data in deque */
-    deque->bottom = 0;
-    new_age.fields.top = 0;
+    new_age.fields.top = local_bottom;
     new_age.fields.tag = old_age.fields.tag + 1;
     if (local_bottom == old_age.fields.top) {
         res_age.data = atomic_compxchg_ptr((VALUE *)&deque->age.data,
@@ -1256,14 +1252,44 @@ pop_bottom(struct deque *deque, VALUE *data)
         if (res_age.data == old_age.data) {
             /* before pop_top() */
             gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
-                      "bottom over than top. Or over than GC_DEQUE_MAX.");
+                      "bottom == (top - 1)");
             return TRUE;
         }
     }
     /* after pop_top() */
     deque->age = new_age;
     gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
-                      "bottom over than top. Or over than GC_DEQUE_MAX.");
+              "bottom == (top - 1)");
+    return FALSE;
+}
+
+static int
+pop_top(struct deque *deque, VALUE *data)
+{
+    union deque_age old_age, new_age, res_age;
+    size_t local_bottom;
+
+    old_age = deque->age;
+    local_bottom = deque->bottom;
+    if (size_deque(local_bottom, old_age.fields.top) == 0) {
+        return FALSE;
+    }
+
+    *data = deque->datas[old_age.fields.top];
+    new_age = old_age;
+    new_age.fields.top = deque_increment(new_age.fields.top);
+    if (new_age.fields.top == 0) {
+        new_age.fields.tag++;
+    }
+
+    res_age.data = atomic_compxchg_ptr((VALUE *)&deque->age.data,
+                                       (VALUE)old_age.data,
+                                       (VALUE)new_age.data);
+    gc_assert(raw_size_deque(local_bottom, new_age.fields.top) != GC_DEQUE_SIZE_MASK,
+              "bottom == (top - 1)");
+    if (res_age.data == old_age.data) {
+        return TRUE;
+    }
     return FALSE;
 }
 
@@ -3778,6 +3804,11 @@ rb_gc_test(void)
     deque->bottom = 0;
     gc_assert(size_deque(deque->bottom, deque->age.fields.top) == 0, "not eq\n");
 
+    deque->age.fields.top = 2;
+    deque->bottom = 0;
+    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == GC_DEQUE_MAX, "not eq\n");
+
+
     /* is_full_deque test */
     deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX;
@@ -3794,6 +3825,7 @@ rb_gc_test(void)
     gc_assert(!is_full_deque(deque->bottom, deque->age.fields.top),
               "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
 
+
     /* push_bottom test */
     deque->age.fields.top = 0;
     deque->bottom = 0;
@@ -3801,22 +3833,38 @@ rb_gc_test(void)
     gc_assert(res, "false?");
     gc_assert(deque->datas[0] == 1, "datas[0] %p\n", deque->datas[0]);
     gc_assert(deque->bottom == 1, "bottom %d\n", deque->bottom);
+
     res = push_bottom(deque, 2);
     gc_assert(res, "false?");
     gc_assert(deque->datas[1] == 2, "datas[1] %p\n", deque->datas[1]);
+
     res = push_bottom(deque, 2);
     gc_assert(res, "false?");
     gc_assert(deque->datas[1] == 2, "datas[1] %p\n", deque->datas[1]);
+
     deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX;
     res = push_bottom(deque, 2);
     gc_assert(!res, "true?");
+
+    deque->age.fields.top = 5;
+    deque->bottom = 2;
+    res = push_bottom(deque, 2);
+    gc_assert(res, "false?");
+    gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
+    gc_assert(deque->datas[2] == 2, "datas[3] %p\n", deque->datas[2]);
+
+    res = push_bottom(deque, 2);
+    gc_assert(!res, "true?");
+    gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
+
 
     /* is_empty */
     deque->age.fields.top = 0;
     deque->bottom = 0;
     res = is_empty_deque(deque->bottom, deque->age.fields.top);
     gc_assert(res == TRUE, "res %d\n", res);
+
     deque->bottom = 1;
     res = is_empty_deque(deque->bottom, deque->age.fields.top);
     gc_assert(res == FALSE, "res %d\n", res);
@@ -3825,6 +3873,7 @@ rb_gc_test(void)
     res = 1;
     atomic_deque_decrement_and_fetch(&res, res);
     gc_assert(res == 0, "res %d\n", res);
+
     atomic_deque_decrement_and_fetch(&res, res);
     gc_assert(res == GC_DEQUE_SIZE_MASK, "res %d\n", res);
 
@@ -3846,12 +3895,46 @@ rb_gc_test(void)
     /* pop_bottom lose
     gc_assert(res == FALSE, "fail\n");
     */
-
     res = pop_bottom(deque, &data);
     data = 2;
     gc_assert(res == FALSE, "fail\n");
     gc_assert(data == 2, "data %d\n", data);
 
+    deque->age.fields.top = 5;
+    deque->bottom = 2;
+    push_bottom(deque, 3);
+    res = pop_bottom(deque, &data);
+    gc_assert(res == TRUE, "fail\n");
+    gc_assert(data == 3, "data %d\n", data);
+    gc_assert(deque->bottom == 2, "bottom %d\n", deque->bottom);
+    pop_bottom(deque, &data);
+    pop_bottom(deque, &data);
+    pop_bottom(deque, &data);
+    gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK, "bottom %d\n", deque->bottom);
+
+
+    /* pop_top test */
+    deque->age.fields.top = 0;
+    deque->age.fields.tag = 0;
+    deque->bottom = 0;
+    push_bottom(deque, 1);
+    res = pop_top(deque, &data);
+    gc_assert(res == TRUE, "fail\n");
+    gc_assert(data == 1, "data %d\n", data);
+    gc_assert(deque->age.fields.top == 1, "top %d\n", deque->age.fields.top);
+    gc_assert(deque->age.fields.tag == 0, "tag %d\n", deque->age.fields.tag);
+
+    res = pop_top(deque, &data);
+    gc_assert(res == FALSE, "fail\n");
+    gc_assert(deque->age.fields.top == 1, "top %d\n", deque->age.fields.top);
+
+    deque->age.fields.top = GC_DEQUE_SIZE_MASK;
+    deque->bottom = 2;
+    res = pop_top(deque, &data);
+    gc_assert(res == TRUE, "fail\n");
+    gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
+    gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
+    
     return Qnil;
 }
 #endif
