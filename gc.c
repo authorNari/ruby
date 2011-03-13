@@ -327,8 +327,6 @@ struct gc_list {
 
 #define CALC_EXACT_MALLOC_SIZE 0
 
-// Implementation of Parallel Marking is Arora's Task Stealing Deque Algorithm.
-// http://doi.acm.org/10.1145/277651.277678
 #ifdef __LP64__
 typedef uint32_t half_word;
 #else
@@ -1304,7 +1302,42 @@ init_deque_set(rb_objspace_t *objspace)
     }
     objspace->deque_set.deques = (struct deque *)p;
     objspace->deque_set.length = num_worker;
-};
+}
+
+static int
+steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
+{
+    struct deque *tmp_deque, *res_deque;
+    size_t res_size = 0, tmp_size = 0, i = 0;
+
+    if (objspace->deque_set.length > 2) {
+        for (i = 0; i < objspace->deque_set.length; i++) {
+            if (i != deque_index) {
+                tmp_deque = &objspace->deque_set.deques[i];
+                tmp_size = size_deque(tmp_deque->bottom, tmp_deque->age.fields.top);
+                if (tmp_size > res_size) {
+                    res_size = tmp_size;
+                    res_deque = tmp_deque;
+                }
+            }
+        }
+        if (res_size <= 0) {
+            return FALSE;
+        }
+        else {
+            return pop_top(res_deque, data);
+        }
+    }
+    else if (objspace->deque_set.length == 2) {
+        i = (deque_index + 1) % 2;
+        return pop_top(&objspace->deque_set.deques[i], data);
+    }
+    else {
+        gc_assert(objspace->deque_set.length == 1,
+                  "should not call this function.");
+        return FALSE;
+    }
+}
 
 static void
 add_heap_slots(rb_objspace_t *objspace, size_t add)
@@ -3784,7 +3817,7 @@ rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     struct deque *deque = &objspace->deque_set.deques[0];
-    int res;
+    int res, tmp_num_worker;
     VALUE data;
 
     /* deque size test */
@@ -3934,6 +3967,46 @@ rb_gc_test(void)
     gc_assert(res == TRUE, "fail\n");
     gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
+
+    /* steal */
+    deque->bottom = 0;
+    deque->age.fields.top = 0;
+    deque->age.fields.tag = 0;
+    push_bottom(&objspace->deque_set.deques[1], 11);
+    push_bottom(&objspace->deque_set.deques[1], 12);
+    push_bottom(&objspace->deque_set.deques[1], 13);
+    push_bottom(&objspace->deque_set.deques[2], 21);
+    push_bottom(&objspace->deque_set.deques[2], 22);
+    push_bottom(&objspace->deque_set.deques[3], 31);
+    res = steal(objspace, 0, &data);
+    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(data == 11, "data: %d\n", data);
+    res = steal(objspace, 1, &data);
+    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(data == 21, "data: %d\n", data);
+    res = steal(objspace, 2, &data);
+    gc_assert(data == 12, "data: %d\n", data);
+    res = steal(objspace, 0, &data);
+    gc_assert(data == 13, "data: %d\n", data);
+    res = steal(objspace, 0, &data);
+    gc_assert(data == 22, "data: %d\n", data);
+    res = steal(objspace, 0, &data);
+    gc_assert(data == 31, "data: %d\n", data);
+    res = steal(objspace, 0, &data);
+    gc_assert(res == 0, "res: %d\n", res);
+
+    push_bottom(&objspace->deque_set.deques[0], 1);
+    tmp_num_worker = num_worker;
+    num_worker = 2;
+    res = steal(objspace, 1, &data);
+    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(data == 1, "data: %d\n", data);
+    push_bottom(&objspace->deque_set.deques[1], 11);
+    res = steal(objspace, 0, &data);
+    gc_assert(data == 11, "data: %d\n", data);
+    res = steal(objspace, 0, &data);
+    gc_assert(res == 0, "res: %d\n", res);
+    num_worker = tmp_num_worker;
     
     return Qnil;
 }
