@@ -350,6 +350,13 @@ struct deque {
     union deque_age age;
 };
 
+#define PAR_MARKBUFFER_SIZE _GC_DEQUE_SIZE / 2
+
+struct par_markbuffer {
+    VALUE buf[PAR_MARKBUFFER_SIZE];
+    struct par_markbuffer *next;
+};
+
 typedef struct rb_objspace {
     struct {
 	size_t limit;
@@ -389,6 +396,7 @@ typedef struct rb_objspace {
 	VALUE *ptr;
 	int overflow;
     } markstack;
+    struct par_markbuffer *par_marklist;
     struct {
         struct deque *deques;
         size_t length;
@@ -1211,6 +1219,54 @@ push_bottom(struct deque *deque, VALUE data)
     }
     return FALSE;
 }
+
+/* TODO: must lock */
+static void
+add_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
+{
+    *buf = (struct par_markbuffer *)malloc(sizeof(struct par_markbuffer));
+
+    if (*buf == 0) {
+	during_gc = 0;
+	rb_memerror();
+    }
+    MEMZERO((void *)*buf, struct par_markbuffer, 1);
+    (*buf)->next = objspace->par_marklist;
+    objspace->par_marklist = *buf;
+}
+
+/* TODO: must lock */
+static int
+unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
+{
+    if (objspace->par_marklist == 0) {
+        return FALSE;
+    }
+
+    *buf = objspace->par_marklist;
+    objspace->par_marklist = objspace->par_marklist->next;
+    return TRUE;
+}
+
+/*
+static int
+push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
+{
+    int res;
+
+    if(!(res = push_bottom(deque, data))) {
+    }
+}
+
+static int
+pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE data)
+{
+    int res;
+
+    if(!(res = push_bottom(deque, data))) {
+    }
+}
+*/
 
 static int
 pop_bottom(struct deque *deque, VALUE *data)
@@ -3819,6 +3875,7 @@ rb_gc_test(void)
     struct deque *deque = &objspace->deque_set.deques[0];
     int res, tmp_num_worker;
     VALUE data;
+    struct par_markbuffer *buf = 0;
 
     /* deque size test */
     deque->age.fields.top = GC_DEQUE_SIZE_MASK;
@@ -4007,7 +4064,32 @@ rb_gc_test(void)
     res = steal(objspace, 0, &data);
     gc_assert(res == 0, "res: %d\n", res);
     num_worker = tmp_num_worker;
-    
+
+    /* add_par_marklist */
+    add_par_marklist(objspace, &buf);
+    gc_assert(buf != 0, "not zero\n");
+    gc_assert(objspace->par_marklist == buf, "%p : %p\n",
+              objspace->par_marklist, buf);
+    gc_assert(objspace->par_marklist->next == 0, "not zero\n");
+    gc_assert(objspace->par_marklist->buf[1] == 0, "not zero\n");
+
+    add_par_marklist(objspace, &buf);
+    gc_assert(buf != 0, "not zero\n");
+    gc_assert(objspace->par_marklist == buf, "%p : %p\n",
+              objspace->par_marklist, buf);
+    gc_assert(objspace->par_marklist->next != 0, "not zero\n");
+    gc_assert(objspace->par_marklist->next->next == 0, "not zero\n");
+
+    /* unlink_par_marklist */
+    res = unlink_par_marklist(objspace, &buf);
+    gc_assert(res != 0, "not zero\n");
+    gc_assert(buf != 0, "not zero\n");
+    res = unlink_par_marklist(objspace, &buf);
+    gc_assert(res != 0, "not zero\n");
+    gc_assert(buf != 0, "not zero\n");
+    res = unlink_par_marklist(objspace, &buf);
+    gc_assert(res == 0, "not zero\n");
+
     return Qnil;
 }
 #endif
