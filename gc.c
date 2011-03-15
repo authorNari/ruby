@@ -350,7 +350,7 @@ struct deque {
     union deque_age age;
 };
 
-#define PAR_MARKBUFFER_SIZE _GC_DEQUE_SIZE / 2
+#define PAR_MARKBUFFER_SIZE (_GC_DEQUE_SIZE / 2)
 
 struct par_markbuffer {
     VALUE buf[PAR_MARKBUFFER_SIZE];
@@ -1250,15 +1250,6 @@ unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
 
 /*
 static int
-push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
-{
-    int res;
-
-    if(!(res = push_bottom(deque, data))) {
-    }
-}
-
-static int
 pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE data)
 {
     int res;
@@ -1315,6 +1306,29 @@ pop_bottom(struct deque *deque, VALUE *data)
     gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
               "bottom == (top - 1)");
     return FALSE;
+}
+
+static void
+push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
+{
+    int res, i;
+    VALUE tmp;
+    struct par_markbuffer *markbuffer;
+
+    if(!(res = push_bottom(deque, data))) {
+        /* overflowed */
+        add_par_marklist(objspace, &markbuffer);
+
+        for (i = 0; i < PAR_MARKBUFFER_SIZE; i++) {
+            if (!(pop_bottom(deque, &tmp))) {
+                break;
+            }
+            markbuffer->buf[i] = tmp;
+        }
+
+        res = push_bottom(deque, data);
+        gc_assert(res == TRUE, "must be success");
+    }
 }
 
 static int
@@ -4089,6 +4103,25 @@ rb_gc_test(void)
     gc_assert(buf != 0, "not zero\n");
     res = unlink_par_marklist(objspace, &buf);
     gc_assert(res == 0, "not zero\n");
+
+
+    /* push_bottom_with_overflow */
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    push_bottom_with_overflow(objspace, deque, 1);
+    gc_assert(deque->datas[0] == 1, "eq\n");
+
+    deque->age.fields.top = 0;
+    deque->bottom = GC_DEQUE_MAX-1;
+    push_bottom(deque, GC_DEQUE_MAX);
+    push_bottom_with_overflow(objspace, deque, 2);
+    gc_assert(deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE] == 2,
+              "data %d\n", deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE]);
+    gc_assert(objspace->par_marklist != 0, "not zero\n");
+    gc_assert(objspace->par_marklist->buf[0] == GC_DEQUE_MAX, "%d\n",
+              objspace->par_marklist->buf[0]);
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
 
     return Qnil;
 }
