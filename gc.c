@@ -1248,17 +1248,6 @@ unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
     return TRUE;
 }
 
-/*
-static int
-pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE data)
-{
-    int res;
-
-    if(!(res = push_bottom(deque, data))) {
-    }
-}
-*/
-
 static int
 pop_bottom(struct deque *deque, VALUE *data)
 {
@@ -1329,6 +1318,32 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
         res = push_bottom(deque, data);
         gc_assert(res == TRUE, "must be success");
     }
+}
+
+static int
+pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *data)
+{
+    int i, res;
+    struct par_markbuffer *markbuffer;
+
+    if(!(pop_bottom(deque, data))) {
+        /* empty */
+        gc_assert(is_empty_deque(deque->bottom, deque->age.fields.top),
+                  "not empty? %d, %d\n",
+                  deque->bottom, deque->age.fields.top);
+
+        if (!unlink_par_marklist(objspace, &markbuffer)) {
+            return FALSE;
+        }
+
+        for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
+            res = push_bottom(deque, markbuffer->buf[i]);
+            gc_assert(res == TRUE, "must be true\n");
+        }
+        res = pop_bottom(deque, data);
+        gc_assert(res == TRUE, "must be true\n");
+    }
+    return TRUE;
 }
 
 static int
@@ -4122,6 +4137,20 @@ rb_gc_test(void)
               objspace->par_marklist->buf[0]);
     deque->age.fields.top = 0;
     deque->bottom = 0;
+
+
+    /* pop_bottom_with_get_back */
+    push_bottom(deque, 1);
+    res = pop_bottom_with_get_back(objspace, deque, &data);
+    gc_assert(res == TRUE, "false?\n");
+    gc_assert(data == 1, "%d\n", data);
+    res = pop_bottom_with_get_back(objspace, deque, &data);
+    gc_assert(res == TRUE, "false?\n");
+    gc_assert(data == GC_DEQUE_MAX, "%d\n", data);
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    res = pop_bottom_with_get_back(objspace, deque, &data);
+    gc_assert(res == FALSE, "false?\n");
 
     return Qnil;
 }
