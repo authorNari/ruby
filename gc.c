@@ -1189,12 +1189,11 @@ atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 #endif
 }
 
-static void
-atomic_deque_decrement_and_fetch(size_t *ptr, size_t index)
+static inline void
+order_access_memory_barrier(void)
 {
 #if GCC_VERSION_SINCE(4,1,2)
-    __sync_sub_and_fetch(ptr, 1);
-    __sync_and_and_fetch(ptr, GC_DEQUE_SIZE_MASK);
+    __sync_synchronize();
 #else
     /* TODO: support for not GCC */
 #endif
@@ -1262,10 +1261,11 @@ pop_bottom(struct deque *deque, VALUE *data)
     if (is_empty_deque(local_bottom, old_age.fields.top))
         return FALSE;
 
-    /* use memory barrier */
-    atomic_deque_decrement_and_fetch(&local_bottom, local_bottom);
+    local_bottom = deque_decrement(local_bottom);
     deque->bottom = local_bottom;
 
+    /* necessary memory barrier. */
+    order_access_memory_barrier();
     *data = deque->datas[local_bottom];
     /* must second read of age after local_bottom decremented.
        The local_bottom decrement is lock on. */
@@ -3988,13 +3988,8 @@ rb_gc_test(void)
     res = is_empty_deque(deque->bottom, deque->age.fields.top);
     gc_assert(res == FALSE, "res %d\n", res);
 
-    /* atomic_deque_decrement_and_fetch */
-    res = 1;
-    atomic_deque_decrement_and_fetch(&res, res);
-    gc_assert(res == 0, "res %d\n", res);
-
-    atomic_deque_decrement_and_fetch(&res, res);
-    gc_assert(res == GC_DEQUE_SIZE_MASK, "res %d\n", res);
+    /* order_access_memory_barrier */
+    order_access_memory_barrier();
 
     /* pop_bottom test */
     deque->age.fields.top = 0;
