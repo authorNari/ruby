@@ -398,7 +398,8 @@ typedef struct rb_objspace {
     } markstack;
     struct {
         struct par_markbuffer *list;
-        struct heaps_slot *slot_finger;
+        struct sorted_heaps_slot *slot_finger;
+        size_t num_worker;
     } par_mark;
     struct {
         struct deque *deques;
@@ -1119,8 +1120,6 @@ assign_heap_slot(rb_objspace_t *objspace)
     }
 }
 
-// TODO: want to guess the cpu processer number.
-static size_t num_worker = 8;
 static size_t size_deque(size_t bottom, size_t top);
 
 static size_t
@@ -1384,12 +1383,14 @@ init_deque_set(rb_objspace_t *objspace)
 {
     void *p;
 
-    p = malloc(sizeof(struct deque) * num_worker);
+    /* TODO: want to guess the cpu processer number. */
+    objspace->par_mark.num_worker = 8;
+    p = malloc(sizeof(struct deque) * objspace->par_mark.num_worker);
     if (!p) {
         return rb_memerror();
     }
     objspace->deque_set.deques = (struct deque *)p;
-    objspace->deque_set.length = num_worker;
+    objspace->deque_set.length = objspace->par_mark.num_worker;
 }
 
 static int
@@ -4080,8 +4081,8 @@ rb_gc_test(void)
     gc_assert(res == 0, "res: %d\n", res);
 
     push_bottom(&objspace->deque_set.deques[0], 1);
-    tmp_num_worker = num_worker;
-    num_worker = 2;
+    tmp_num_worker = objspace->par_mark.num_worker;
+    objspace->par_mark.num_worker = 2;
     res = steal(objspace, 1, &data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 1, "data: %d\n", data);
@@ -4090,7 +4091,7 @@ rb_gc_test(void)
     gc_assert(data == 11, "data: %d\n", data);
     res = steal(objspace, 0, &data);
     gc_assert(res == 0, "res: %d\n", res);
-    num_worker = tmp_num_worker;
+    objspace->par_mark.num_worker = tmp_num_worker;
 
     /* add_par_marklist */
     add_par_marklist(objspace, &buf);
