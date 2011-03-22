@@ -398,6 +398,7 @@ typedef struct rb_objspace {
     } markstack;
     struct {
         struct par_markbuffer *list;
+        struct heaps_slot *slot_finger;
     } par_mark;
     struct {
         struct deque *deques;
