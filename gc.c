@@ -1973,19 +1973,29 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     obj->as.basic.flags |= FL_MARK;
     objspace->heap.live_num++;
 
-    if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
-	if (!mark_stack_overflow) {
-	    if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
-		*mark_stack_ptr = ptr;
-		mark_stack_ptr++;
-	    }
-	    else {
-		mark_stack_overflow = 1;
-	    }
-	}
-	return;
+    /* parallel work? */
+    if (objspace->par_mark.num_worker <= 1) {
+        if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
+            if (!mark_stack_overflow) {
+                if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
+                    *mark_stack_ptr = ptr;
+                    mark_stack_ptr++;
+                }
+                else {
+                    mark_stack_overflow = 1;
+                }
+            }
+            return;
+        }
+        gc_mark_children(objspace, ptr, lev+1);
     }
-    gc_mark_children(objspace, ptr, lev+1);
+    else {
+        /* passed gray object? */
+        if (objspace->par_mark.slot_finger != NULL &&
+            obj <= objspace->par_mark.slot_finger->end) {
+            /* TODO: push_bottom() dequeのindexが必要。 */
+        }
+    }
 }
 
 void
@@ -2787,6 +2797,14 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
 }
 
 static void
+gc_par_gray_marks(rb_objspace_t *objspace)
+{
+    /* TODO: スロット内のマーク済みオブジェクトに対して gc_mark_children() 呼び出し */
+    /* TODO: deque からオブジェクトを取得して gc_mark_children() 呼び出し */
+    /* TODO: 空になったらtask steal */
+}
+
+static void
 gc_marks(rb_objspace_t *objspace)
 {
     struct gc_list *list;
@@ -2834,6 +2852,12 @@ gc_marks(rb_objspace_t *objspace)
 	    gc_mark_rest(objspace);
 	}
     }
+
+    /* parallel work? */
+    if (objspace->par_mark.num_worker > 1) {
+        /* TODO: 複数のスレッドで実行する gc_par_gray_marks() */
+    }
+
     GC_PROF_MARK_TIMER_STOP;
 }
 
