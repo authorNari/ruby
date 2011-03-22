@@ -396,7 +396,9 @@ typedef struct rb_objspace {
 	VALUE *ptr;
 	int overflow;
     } markstack;
-    struct par_markbuffer *par_marklist;
+    struct {
+        struct par_markbuffer *list;
+    } par_mark;
     struct {
         struct deque *deques;
         size_t length;
@@ -1230,20 +1232,20 @@ add_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
 	rb_memerror();
     }
     MEMZERO((void *)*buf, struct par_markbuffer, 1);
-    (*buf)->next = objspace->par_marklist;
-    objspace->par_marklist = *buf;
+    (*buf)->next = objspace->par_mark.list;
+    objspace->par_mark.list = *buf;
 }
 
 /* TODO: must lock */
 static int
 unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
 {
-    if (objspace->par_marklist == 0) {
+    if (objspace->par_mark.list == 0) {
         return FALSE;
     }
 
-    *buf = objspace->par_marklist;
-    objspace->par_marklist = objspace->par_marklist->next;
+    *buf = objspace->par_mark.list;
+    objspace->par_mark.list = objspace->par_mark.list->next;
     return TRUE;
 }
 
@@ -4092,17 +4094,17 @@ rb_gc_test(void)
     /* add_par_marklist */
     add_par_marklist(objspace, &buf);
     gc_assert(buf != 0, "not zero\n");
-    gc_assert(objspace->par_marklist == buf, "%p : %p\n",
-              objspace->par_marklist, buf);
-    gc_assert(objspace->par_marklist->next == 0, "not zero\n");
-    gc_assert(objspace->par_marklist->buf[1] == 0, "not zero\n");
+    gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
+              objspace->par_mark.list, buf);
+    gc_assert(objspace->par_mark.list->next == 0, "not zero\n");
+    gc_assert(objspace->par_mark.list->buf[1] == 0, "not zero\n");
 
     add_par_marklist(objspace, &buf);
     gc_assert(buf != 0, "not zero\n");
-    gc_assert(objspace->par_marklist == buf, "%p : %p\n",
-              objspace->par_marklist, buf);
-    gc_assert(objspace->par_marklist->next != 0, "not zero\n");
-    gc_assert(objspace->par_marklist->next->next == 0, "not zero\n");
+    gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
+              objspace->par_mark.list, buf);
+    gc_assert(objspace->par_mark.list->next != 0, "not zero\n");
+    gc_assert(objspace->par_mark.list->next->next == 0, "not zero\n");
 
     /* unlink_par_marklist */
     res = unlink_par_marklist(objspace, &buf);
@@ -4127,9 +4129,9 @@ rb_gc_test(void)
     push_bottom_with_overflow(objspace, deque, 2);
     gc_assert(deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE] == 2,
               "data %d\n", deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE]);
-    gc_assert(objspace->par_marklist != 0, "not zero\n");
-    gc_assert(objspace->par_marklist->buf[0] == GC_DEQUE_MAX, "%d\n",
-              objspace->par_marklist->buf[0]);
+    gc_assert(objspace->par_mark.list != 0, "not zero\n");
+    gc_assert(objspace->par_mark.list->buf[0] == GC_DEQUE_MAX, "%d\n",
+              objspace->par_mark.list->buf[0]);
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
