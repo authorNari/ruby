@@ -398,6 +398,7 @@ typedef struct rb_objspace {
     } markstack;
     struct {
         struct par_markbuffer *list;
+        size_t slot_finger_index;
         struct sorted_heaps_slot *slot_finger;
         size_t num_worker;
     } par_mark;
@@ -2796,6 +2797,34 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
     }
 }
 
+static struct sorted_heaps_slot *
+gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
+{
+    size_t tmp_index, acquire_index, res;
+
+    tmp_index = objspace->par_mark.slot_finger_index;
+    acquire_index = tmp_index + 1;
+
+    while(acquire_index < (heaps_used-1)) {
+        res = atomic_compxchg_ptr((VALUE *)&objspace->par_mark.slot_finger_index,
+                                  (VALUE)tmp_index,
+                                  (VALUE)acquire_index);
+
+        if (res == acquire_index) {
+            objspace->par_mark.slot_finger = &objspace->heap.sorted[acquire_index];
+            return objspace->par_mark.slot_finger;
+        }
+        else {
+            tmp_index = res;
+            acquire_index = tmp_index + 1;
+        }
+    }
+
+    gc_assert(acquire_index == (heaps_used-1),
+              "out of range. acquire_index: %d\n", acquire_index);
+    return NULL;
+}
+
 static void
 gc_par_gray_marks(rb_objspace_t *objspace)
 {
@@ -2803,6 +2832,7 @@ gc_par_gray_marks(rb_objspace_t *objspace)
     /* TODO: deque からオブジェクトを取得して gc_mark_children() 呼び出し */
     /* TODO: 空になったらtask steal */
 }
+
 
 static void
 gc_marks(rb_objspace_t *objspace)
@@ -4174,6 +4204,9 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, &data);
     gc_assert(res == FALSE, "false?\n");
+
+
+    /* gc_atomic_acquired_slot_finger_index */
 
     return Qnil;
 }
