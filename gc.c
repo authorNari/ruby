@@ -2805,7 +2805,7 @@ gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
     tmp_index = objspace->par_mark.slot_finger_index;
     acquire_index = tmp_index + 1;
 
-    while(acquire_index < (heaps_used-1)) {
+    while(acquire_index < heaps_used) {
         res = atomic_compxchg_ptr((VALUE *)&objspace->par_mark.slot_finger_index,
                                   (VALUE)tmp_index,
                                   (VALUE)acquire_index);
@@ -2820,7 +2820,7 @@ gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
         }
     }
 
-    gc_assert(acquire_index == (heaps_used-1),
+    gc_assert((acquire_index-1) < heaps_used,
               "out of range. acquire_index: %d\n", acquire_index);
     return NULL;
 }
@@ -4206,7 +4206,24 @@ rb_gc_test(void)
     gc_assert(res == FALSE, "false?\n");
 
 
-    /* gc_atomic_acquired_slot_finger_index */
+    /* gc_atomic_acquired_slot_finger */
+    objspace->par_mark.slot_finger_index = 0;
+    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
+    gc_assert(objspace->par_mark.slot_finger_index == 1, "%d\n",
+              objspace->par_mark.slot_finger_index);
+    gc_assert(res == (VALUE)&objspace->heap.sorted[1], "not eq\n");
+
+    objspace->par_mark.slot_finger_index = heaps_used-2;
+    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
+    gc_assert(objspace->par_mark.slot_finger_index == heaps_used-1, "%d\n",
+              objspace->par_mark.slot_finger_index);
+    gc_assert(res == (VALUE)&objspace->heap.sorted[heaps_used-1], "not eq\n");
+
+    objspace->par_mark.slot_finger_index = heaps_used-1;
+    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
+    gc_assert(objspace->par_mark.slot_finger_index == heaps_used-1, "%d\n",
+              objspace->par_mark.slot_finger_index);
+    gc_assert(res == 0, "not null\n");
 
     return Qnil;
 }
