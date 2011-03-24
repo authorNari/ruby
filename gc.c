@@ -350,6 +350,11 @@ struct deque {
     union deque_age age;
 };
 
+struct par_mark_worker {
+    int index;
+    struct deque *local_deque;
+};
+
 #define PAR_MARKBUFFER_SIZE (_GC_DEQUE_SIZE / 2)
 
 struct par_markbuffer {
@@ -401,6 +406,7 @@ typedef struct rb_objspace {
         size_t slot_finger_index;
         struct sorted_heaps_slot *slot_finger;
         size_t num_worker;
+        struct par_mark_worker *workers;
     } par_mark;
     struct {
         struct deque *deques;
@@ -1380,9 +1386,10 @@ pop_top(struct deque *deque, VALUE *data)
 }
 
 static void
-init_deque_set(rb_objspace_t *objspace)
+init_par_mark(rb_objspace_t *objspace)
 {
     void *p;
+    int i;
 
     /* TODO: want to guess the cpu processer number. */
     objspace->par_mark.num_worker = 8;
@@ -1392,6 +1399,16 @@ init_deque_set(rb_objspace_t *objspace)
     }
     objspace->deque_set.deques = (struct deque *)p;
     objspace->deque_set.length = objspace->par_mark.num_worker;
+
+    p = malloc(sizeof(struct par_mark_worker) * objspace->par_mark.num_worker);
+    if (!p) {
+        return rb_memerror();
+    }
+    objspace->par_mark.workers = (struct par_mark_worker *)p;
+    for(i = 0; i < objspace->par_mark.num_worker; i++) {
+        objspace->par_mark.workers[i].index = i;
+        objspace->par_mark.workers[i].local_deque = NULL;
+    }
 }
 
 static int
@@ -2828,7 +2845,22 @@ gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
 static void
 gc_par_gray_marks(rb_objspace_t *objspace)
 {
-    /* TODO: スロット内のマーク済みオブジェクトに対して gc_mark_children() 呼び出し */
+    struct sorted_heaps_slot *acquired_slot;
+    RVALUE *p;
+
+    acquired_slot = gc_atomic_acquired_slot_finger(objspace);
+
+    while(acquired_slot != NULL) {
+        p = acquired_slot->start;
+        while (p < acquired_slot->end) {
+            if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
+                gc_mark_children(objspace, (VALUE)p, 0);
+            }
+            p++;
+        }
+        acquired_slot = gc_atomic_acquired_slot_finger(objspace);
+    }
+
     /* TODO: deque からオブジェクトを取得して gc_mark_children() 呼び出し */
     /* TODO: 空になったらtask steal */
 }
@@ -2999,7 +3031,7 @@ void
 Init_heap(void)
 {
     init_heap(&rb_objspace);
-    init_deque_set(&rb_objspace);
+    init_par_mark(&rb_objspace);
 }
 
 static VALUE
