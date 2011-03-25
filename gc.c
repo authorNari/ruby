@@ -350,11 +350,6 @@ struct deque {
     union deque_age age;
 };
 
-struct par_mark_worker {
-    int index;
-    struct deque *local_deque;
-};
-
 #define PAR_MARKBUFFER_SIZE (_GC_DEQUE_SIZE / 2)
 
 struct par_markbuffer {
@@ -406,7 +401,7 @@ typedef struct rb_objspace {
         size_t slot_finger_index;
         struct sorted_heaps_slot *slot_finger;
         size_t num_worker;
-        struct par_mark_worker *workers;
+        rb_gc_par_worker_t *workers;
     } par_mark;
     struct {
         struct deque *deques;
@@ -1400,14 +1395,14 @@ init_par_mark(rb_objspace_t *objspace)
     objspace->deque_set.deques = (struct deque *)p;
     objspace->deque_set.length = objspace->par_mark.num_worker;
 
-    p = malloc(sizeof(struct par_mark_worker) * objspace->par_mark.num_worker);
+    p = malloc(sizeof(rb_gc_par_worker_t) * objspace->par_mark.num_worker);
     if (!p) {
         return rb_memerror();
     }
-    objspace->par_mark.workers = (struct par_mark_worker *)p;
+    MEMZERO(p, rb_gc_par_worker_t, objspace->par_mark.num_worker);
+    objspace->par_mark.workers = (rb_gc_par_worker_t *)p;
     for(i = 0; i < objspace->par_mark.num_worker; i++) {
         objspace->par_mark.workers[i].index = i;
-        objspace->par_mark.workers[i].local_deque = NULL;
     }
 }
 
@@ -3987,14 +3982,23 @@ gc_profile_total_time(VALUE self)
 }
 
 #ifdef GC_DEBUG
+
+void
+gc_par_print_test(void *worker)
+{
+    gc_assert(worker == rb_gc_par_mark_worker_from_native(), "not eq\n");
+    printf("other thread! %p\n", worker);
+}
+
 VALUE
 rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     struct deque *deque = &objspace->deque_set.deques[0];
-    int res, tmp_num_worker;
+    int res, tmp_num_worker, i;
     VALUE data;
     struct par_markbuffer *buf = 0;
+    rb_gc_par_worker_t *worker;
 
     /* deque size test */
     deque->age.fields.top = GC_DEQUE_SIZE_MASK;
@@ -4256,6 +4260,25 @@ rb_gc_test(void)
     gc_assert(objspace->par_mark.slot_finger_index == heaps_used-1, "%d\n",
               objspace->par_mark.slot_finger_index);
     gc_assert(res == 0, "not null\n");
+
+
+    /* worker */
+    worker = &objspace->par_mark.workers[objspace->par_mark.num_worker-1];
+    gc_assert(worker->index == objspace->par_mark.num_worker-1, "?\n");
+    worker = &objspace->par_mark.workers[0];
+    gc_assert(worker->index == 0, "?\n");
+    res = rb_gc_par_mark_worker_set_native((void *)worker);
+    gc_assert(res != 0, "res: %d\n", res);
+    worker = rb_gc_par_mark_worker_from_native();
+    gc_assert(worker == &objspace->par_mark.workers[0], "not eq\n");
+
+    /* run task */
+    for(i = 0; i < objspace->par_mark.num_worker; i++) {
+        worker = &objspace->par_mark.workers[i];
+        printf("worker: %p\n", worker);
+        worker->task = gc_par_print_test;
+        rb_gc_par_mark_worker_create(worker);
+    }
 
     return Qnil;
 }

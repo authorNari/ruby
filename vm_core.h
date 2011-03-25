@@ -486,10 +486,25 @@ typedef struct rb_thread_struct {
     unsigned long running_time_us;
 } rb_thread_t;
 
-/* iseq.c */
+typedef struct rb_gc_par_worker_struct {
+    int index;
+    rb_thread_id_t thread_id;
+    void (*task) (void *worker);
+    struct deque *local_deque;
+    int finished;
+} rb_gc_par_worker_t;
+
 #if defined __GNUC__ && __GNUC__ >= 4
 #pragma GCC visibility push(default)
 #endif
+
+/* thread.c */
+rb_gc_par_worker_t *rb_gc_par_mark_worker_from_native(void);
+int rb_gc_par_mark_worker_set_native(rb_gc_par_worker_t *);
+int rb_gc_par_mark_worker_create(rb_gc_par_worker_t *);
+void rb_gc_par_worker_join(void *);
+
+/* iseq.c */
 VALUE rb_iseq_new(NODE*, VALUE, VALUE, VALUE, VALUE, enum iseq_type);
 VALUE rb_iseq_new_top(NODE *node, VALUE name, VALUE filename, VALUE filepath, VALUE parent);
 VALUE rb_iseq_new_main(NODE *node, VALUE filename, VALUE filepath);
