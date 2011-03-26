@@ -1402,6 +1402,8 @@ init_par_mark(rb_objspace_t *objspace)
     MEMZERO(p, rb_gc_par_worker_t, objspace->par_mark.num_worker);
     objspace->par_mark.workers = (rb_gc_par_worker_t *)p;
     for(i = 0; i < objspace->par_mark.num_worker; i++) {
+        objspace->par_mark.workers[i].local_deque =
+            &objspace->deque_set.deques[i];
         objspace->par_mark.workers[i].index = i;
     }
 }
@@ -2006,7 +2008,8 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
         /* passed gray object? */
         if (objspace->par_mark.slot_finger != NULL &&
             obj <= objspace->par_mark.slot_finger->end) {
-            /* TODO: push_bottom() dequeのindexが必要。 */
+            rb_gc_par_worker_t *worker = rb_gc_par_worker_from_native();
+            push_bottom_with_overflow(objspace, worker->local_deque, (VALUE)obj);
         }
     }
 }
@@ -2838,12 +2841,17 @@ gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
 }
 
 static void
-gc_par_gray_marks(rb_objspace_t *objspace)
+gc_do_gray_marks(void *w)
 {
     struct sorted_heaps_slot *acquired_slot;
     RVALUE *p;
+    struct deque *local_deque;
+    rb_objspace_t *objspace = &rb_objspace;
+    rb_gc_par_worker_t *worker = (rb_gc_par_worker_t *)w;
 
     acquired_slot = gc_atomic_acquired_slot_finger(objspace);
+    worker = rb_gc_par_worker_from_native();
+    local_deque = worker->local_deque;
 
     while(acquired_slot != NULL) {
         p = acquired_slot->start;
@@ -2853,13 +2861,53 @@ gc_par_gray_marks(rb_objspace_t *objspace)
             }
             p++;
         }
+        gc_debug("worker: %d, acquired_slot: %p\n", worker->index, acquired_slot);
         acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
-    /* TODO: deque からオブジェクトを取得して gc_mark_children() 呼び出し */
-    /* TODO: 空になったらtask steal */
+    while(pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
+        gc_mark_children(objspace, (VALUE)p, 0);
+    }
+
+    while(steal(objspace, worker->index, (VALUE *)&p)) {
+        gc_debug("woker: %d, steal: %p\n", worker->index, p);
+        gc_mark_children(objspace, (VALUE)p, 0);
+
+        while(pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
+            gc_mark_children(objspace, (VALUE)p, 0);
+        }
+    }
+
+    worker->finished = TRUE;
 }
 
+static void
+gc_par_gray_marks(rb_objspace_t *objspace)
+{
+    int i;
+
+    for(i = 0; i < objspace->par_mark.num_worker-1; i++) {
+        objspace->par_mark.workers[i].task = gc_do_gray_marks;
+        objspace->par_mark.workers[i].finished = 0;
+        rb_gc_par_worker_create(&objspace->par_mark.workers[i]);
+        gc_debug("worker: %p, task: %p, thread_id: %p\n",
+                 &objspace->par_mark.workers[i],
+                 objspace->par_mark.workers[i].task,
+                 objspace->par_mark.workers[i].thread_id);
+    }
+
+    for(i = 0; i < objspace->par_mark.num_worker-1; i++) {
+        if(!objspace->par_mark.workers[i].finished) {
+            rb_gc_par_worker_join(objspace->par_mark.workers[i].thread_id);
+            gc_debug("join woker: %d, thread_id: %p\n",
+                     objspace->par_mark.workers[i].index,
+                     objspace->par_mark.workers[i].thread_id);
+        }
+        objspace->par_mark.workers[i].task = 0;
+        objspace->par_mark.workers[i].thread_id = 0;
+    }
+    objspace->par_mark.slot_finger = NULL;
+}
 
 static void
 gc_marks(rb_objspace_t *objspace)
@@ -2912,7 +2960,7 @@ gc_marks(rb_objspace_t *objspace)
 
     /* parallel work? */
     if (objspace->par_mark.num_worker > 1) {
-        /* TODO: 複数のスレッドで実行する gc_par_gray_marks() */
+        gc_par_gray_marks(objspace);
     }
 
     GC_PROF_MARK_TIMER_STOP;
@@ -3986,8 +4034,8 @@ gc_profile_total_time(VALUE self)
 void
 gc_par_print_test(void *worker)
 {
-    gc_assert(worker == rb_gc_par_mark_worker_from_native(), "not eq\n");
-    printf("other thread! %p\n", worker);
+    gc_assert(worker == rb_gc_par_worker_from_native(), "not eq\n");
+    gc_debug("other thread! %p\n", worker);
 }
 
 VALUE
@@ -4267,17 +4315,18 @@ rb_gc_test(void)
     gc_assert(worker->index == objspace->par_mark.num_worker-1, "?\n");
     worker = &objspace->par_mark.workers[0];
     gc_assert(worker->index == 0, "?\n");
-    res = rb_gc_par_mark_worker_set_native((void *)worker);
+    res = rb_gc_par_worker_set_native((void *)worker);
     gc_assert(res != 0, "res: %d\n", res);
-    worker = rb_gc_par_mark_worker_from_native();
+    worker = rb_gc_par_worker_from_native();
     gc_assert(worker == &objspace->par_mark.workers[0], "not eq\n");
 
     /* run task */
     for(i = 0; i < objspace->par_mark.num_worker; i++) {
         worker = &objspace->par_mark.workers[i];
-        printf("worker: %p\n", worker);
+        gc_debug("worker: %p\n", worker);
         worker->task = gc_par_print_test;
-        rb_gc_par_mark_worker_create(worker);
+        rb_gc_par_worker_create(worker);
+        rb_gc_par_worker_join(worker->thread_id);
     }
 
     return Qnil;
