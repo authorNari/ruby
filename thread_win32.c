@@ -673,10 +673,11 @@ native_thread_join(HANDLE th)
     w32_wait_events(&th, 1, INFINITE, 0);
 }
 
-void
+int
 rb_gc_par_worker_join(void *th)
 {
     /* TODO: */
+    return 0;
 }
 
 #if USE_NATIVE_THREAD_PRIORITY

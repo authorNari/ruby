@@ -502,7 +502,7 @@ typedef struct rb_gc_par_worker_struct {
 rb_gc_par_worker_t *rb_gc_par_worker_from_native(void);
 int rb_gc_par_worker_set_native(rb_gc_par_worker_t *);
 int rb_gc_par_worker_create(rb_gc_par_worker_t *);
-void rb_gc_par_worker_join(rb_thread_id_t);
+int rb_gc_par_worker_join(rb_thread_id_t);
 
 /* iseq.c */
 VALUE rb_iseq_new(NODE*, VALUE, VALUE, VALUE, VALUE, enum iseq_type);

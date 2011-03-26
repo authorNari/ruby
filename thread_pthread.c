@@ -793,7 +793,7 @@ gc_par_worker_run_task(void *worker)
     rb_gc_par_worker_t *w = (rb_gc_par_worker_t *)worker;
     rb_gc_par_worker_set_native(w);
     w->task((void *)w);
-    return 0;
+    return NULL;
 }
 
 int
@@ -812,13 +812,8 @@ rb_gc_par_worker_create(rb_gc_par_worker_t *worker)
     CHECK_ERR(pthread_attr_setstacksize(&attr, stack_size));
 #endif
 
-#ifdef HAVE_PTHREAD_ATTR_SETINHERITSCHED
-    CHECK_ERR(pthread_attr_setinheritsched(&attr, PTHREAD_INHERIT_SCHED));
-#endif
-    CHECK_ERR(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
-
     err = pthread_create(&worker->thread_id, &attr, gc_par_worker_run_task, worker);
-    thread_debug("create: %p (%d)", (void *)worker, err);
+    thread_debug("create: %p (%d)\n", (void *)worker, err);
     CHECK_ERR(pthread_attr_destroy(&attr));
 
     return err;
@@ -833,13 +828,15 @@ native_thread_join(pthread_t th)
     }
 }
 
-void
+int
 rb_gc_par_worker_join(pthread_t th)
 {
-    int err = pthread_join(th, 0);
+    int err;
+    err = pthread_join(th, 0);
     if (err) {
-	fprintf(stderr, "rb_gc_par_worker_join() failed (%d)\n", err);
+        thread_debug("rb_gc_par_worker_join() failed (%d)\n", err);
     }
+    return err;
     /* TODO: error handling */
 }
 
