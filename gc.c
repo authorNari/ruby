@@ -1294,14 +1294,14 @@ pop_bottom(struct deque *deque, VALUE *data)
                                            (VALUE)new_age.data);
         if (res_age.data == old_age.data) {
             /* before pop_top() */
-            gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+            gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
                       "bottom == (top - 1)\n");
             return TRUE;
         }
     }
     /* after pop_top() */
     deque->age = new_age;
-    gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+    gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
               "bottom == (top - 1)\n");
     return FALSE;
 }
