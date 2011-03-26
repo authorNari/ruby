@@ -50,7 +50,7 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) /* empty */
 #endif
 
-#define GC_DEBUG 1
+#define GC_DEBUG
 
 #ifdef GC_DEBUG
 #include <assert.h>
@@ -62,6 +62,9 @@
   assert(expect);\
 }while(0)
 #define gc_debug ruby_debug_printf
+#else
+#define gc_debug
+#define gc_assert(expect, format, ...)
 #endif
 
 int rb_io_fptr_finalize(struct rb_io_t*);
@@ -2884,9 +2887,14 @@ gc_do_gray_marks(void *w)
 static void
 gc_par_gray_marks(rb_objspace_t *objspace)
 {
-    int i;
+    int i, num_worker;
 
-    for(i = 0; i < objspace->par_mark.num_worker-1; i++) {
+    num_worker = objspace->par_mark.num_worker;
+#ifdef GC_DEBUG
+    num_worker = 1;
+#endif
+
+    for(i = 0; i < num_worker; i++) {
         objspace->par_mark.workers[i].task = gc_do_gray_marks;
         objspace->par_mark.workers[i].finished = 0;
         rb_gc_par_worker_create(&objspace->par_mark.workers[i]);
@@ -2896,7 +2904,7 @@ gc_par_gray_marks(rb_objspace_t *objspace)
                  objspace->par_mark.workers[i].thread_id);
     }
 
-    for(i = 0; i < objspace->par_mark.num_worker-1; i++) {
+    for(i = 0; i < num_worker; i++) {
         if(!objspace->par_mark.workers[i].finished) {
             rb_gc_par_worker_join(objspace->par_mark.workers[i].thread_id);
             gc_debug("join woker: %d, thread_id: %p\n",
@@ -2906,6 +2914,7 @@ gc_par_gray_marks(rb_objspace_t *objspace)
         objspace->par_mark.workers[i].task = 0;
         objspace->par_mark.workers[i].thread_id = 0;
     }
+    objspace->par_mark.slot_finger_index = 0;
     objspace->par_mark.slot_finger = NULL;
 }
 
