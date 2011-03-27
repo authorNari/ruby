@@ -1421,13 +1421,30 @@ pop_top(struct deque *deque, VALUE *data)
 }
 
 static void
+set_num_parallel_workers(rb_objspace_t *objspace)
+{
+    int cpus;
+
+#ifdef _SC_NPROCESSORS_ONLN
+    cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#else
+    cpus = 1;
+#endif
+
+    if (cpus > 8) {
+        cpus = 8 + (cpus - 8) * (5/8);
+    }
+    objspace->par_mark.num_worker = cpus;
+    gc_debug("set_num_parallel_workers: %d\n", cpus);
+}
+
+static void
 init_par_mark(rb_objspace_t *objspace)
 {
     void *p;
     int i;
 
-    /* TODO: want to guess the cpu processer number. */
-    objspace->par_mark.num_worker = 2;
+    set_num_parallel_workers(objspace);
     p = malloc(sizeof(struct deque) * objspace->par_mark.num_worker);
     if (!p) {
         return rb_memerror();
