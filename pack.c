@@ -11,15 +11,11 @@
 
 #include "ruby/ruby.h"
 #include "ruby/encoding.h"
+#include "gc.h"
 #include <sys/types.h>
 #include <ctype.h>
 #include <errno.h>
 
-#define GCC_VERSION_SINCE(major, minor, patchlevel) \
-  (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
-   ((__GNUC__ > (major)) ||  \
-    (__GNUC__ == (major) && __GNUC_MINOR__ > (minor)) || \
-    (__GNUC__ == (major) && __GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))
 #if SIZEOF_SHORT != 2 || SIZEOF_LONG != 4
 # define NATINT_PACK
 #endif

@@ -1125,6 +1125,7 @@ assign_heap_slot(rb_objspace_t *objspace)
     }
 }
 
+#ifdef PARALLEL_GC_IS_POSSIBLE
 static size_t size_deque(size_t bottom, size_t top);
 
 static size_t
@@ -1179,12 +1180,6 @@ is_empty_deque(size_t bottom, size_t top)
     }
     return FALSE;
 }
-
-#define GCC_VERSION_SINCE(major, minor, patchlevel) \
-  (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
-   ((__GNUC__ > (major)) ||  \
-    (__GNUC__ == (major) && __GNUC_MINOR__ > (minor)) || \
-    (__GNUC__ == (major) && __GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))
 
 static VALUE
 atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
@@ -1425,10 +1420,10 @@ set_num_parallel_workers(rb_objspace_t *objspace)
 {
     int cpus;
 
-#ifdef _SC_NPROCESSORS_ONLN
-    cpus = sysconf(_SC_NPROCESSORS_ONLN);
-#else
+#ifdef _WIN32
     cpus = 1;
+#else
+    cpus = sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 
     if (cpus > 8) {
@@ -1499,6 +1494,7 @@ steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
         return FALSE;
     }
 }
+#endif
 
 static void
 add_heap_slots(rb_objspace_t *objspace, size_t add)
@@ -2045,8 +2041,10 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     obj->as.basic.flags |= FL_MARK;
     objspace->heap.live_num++;
 
+#ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
     if (objspace->par_mark.num_worker <= 1) {
+#endif
         if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
             if (!mark_stack_overflow) {
                 if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
@@ -2060,6 +2058,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
             return;
         }
         gc_mark_children(objspace, ptr, lev+1);
+#ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
         /* passed gray object? */
@@ -2069,6 +2068,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
             push_bottom_with_overflow(objspace, worker->local_deque, (VALUE)obj);
         }
     }
+#endif
 }
 
 void
@@ -2869,6 +2869,7 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
     }
 }
 
+#ifdef PARALLEL_GC_IS_POSSIBLE
 static struct sorted_heaps_slot *
 gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
 {
@@ -2975,6 +2976,8 @@ gc_par_gray_marks(rb_objspace_t *objspace)
     objspace->par_mark.slot_finger = NULL;
 }
 
+#endif
+
 static void
 gc_marks(rb_objspace_t *objspace)
 {
@@ -3024,10 +3027,12 @@ gc_marks(rb_objspace_t *objspace)
 	}
     }
 
+#ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
     if (objspace->par_mark.num_worker > 1) {
         gc_par_gray_marks(objspace);
     }
+#endif
 
     GC_PROF_MARK_TIMER_STOP;
 }
@@ -3140,7 +3145,9 @@ void
 Init_heap(void)
 {
     init_heap(&rb_objspace);
+#ifdef PARALLEL_GC_IS_POSSIBLE
     init_par_mark(&rb_objspace);
+#endif
 }
 
 static VALUE

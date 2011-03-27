@@ -22,7 +22,6 @@
 #define remove_signal_thread_list(th)
 
 static volatile DWORD ruby_native_thread_key = TLS_OUT_OF_INDEXES;
-static volatile DWORD ruby_gc_par_native_worker_key = TLS_OUT_OF_INDEXES;
 
 static int w32_wait_events(HANDLE *events, int count, DWORD timeout, rb_thread_t *th);
 static int native_mutex_lock(rb_thread_lock_t *lock);
@@ -145,18 +144,6 @@ static int
 ruby_thread_set_native(rb_thread_t *th)
 {
     return TlsSetValue(ruby_native_thread_key, th);
-}
-
-int
-rb_gc_par_worker_set_native(rb_gc_par_worker_t *worker)
-{
-    return TlsGetValue(ruby_gc_par_native_worker_key, worker);
-}
-
-rb_gc_par_worker_t *
-rb_gc_par_worker_from_native(void)
-{
-    return TlsGetValue(ruby_gc_par_native_worker_key);
 }
 
 void
@@ -660,24 +647,10 @@ native_thread_create(rb_thread_t *th)
     return 0;
 }
 
-int
-rb_gc_par_worker_create(rb_gc_par_worker_t *worker)
-{
-    /* TODO: */
-    return 0;
-}
-
 static void
 native_thread_join(HANDLE th)
 {
     w32_wait_events(&th, 1, INFINITE, 0);
-}
-
-int
-rb_gc_par_worker_join(void *th)
-{
-    /* TODO: */
-    return 0;
 }
 
 #if USE_NATIVE_THREAD_PRIORITY
