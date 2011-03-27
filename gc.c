@@ -1228,32 +1228,65 @@ push_bottom(struct deque *deque, VALUE data)
     return FALSE;
 }
 
-/* TODO: must lock */
-static void
-add_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
+static struct par_markbuffer *
+par_markbuffer_alloc(rb_objspace_t *objspace)
 {
-    *buf = (struct par_markbuffer *)malloc(sizeof(struct par_markbuffer));
+    struct par_markbuffer *buf;
 
-    if (*buf == 0) {
+    buf = (struct par_markbuffer *)malloc(sizeof(struct par_markbuffer));
+
+    if (buf == 0) {
 	during_gc = 0;
 	rb_memerror();
     }
-    MEMZERO((void *)*buf, struct par_markbuffer, 1);
-    (*buf)->next = objspace->par_mark.list;
-    objspace->par_mark.list = *buf;
+    MEMZERO((void *)buf, struct par_markbuffer, 1);
+
+    return buf;
 }
 
-/* TODO: must lock */
-static int
-unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
+static void
+atomic_add_par_marklist(rb_objspace_t *objspace, struct par_markbuffer *new)
 {
-    if (objspace->par_mark.list == 0) {
-        return FALSE;
+    struct par_markbuffer *old, *res;
+
+    old = objspace->par_mark.list;
+    while(TRUE) {
+        res = (struct par_markbuffer *)atomic_compxchg_ptr(
+            (VALUE *)&objspace->par_mark.list,
+            (VALUE)old, (VALUE)new);
+        if (res == old) {
+            new->next = res;
+            return;
+        }
+        else {
+            old = res;
+        }
+    }
+    gc_assert(0, "don't pass\n");
+    return;
+}
+
+static int
+atomic_unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
+{
+    struct par_markbuffer *old, *res, *new;
+
+    old = objspace->par_mark.list;
+    while(old != NULL) {
+        new = old->next;
+        res = (struct par_markbuffer *)atomic_compxchg_ptr(
+            (VALUE *)&objspace->par_mark.list,
+            (VALUE)old, (VALUE)new);
+        if (res == old) {
+            *buf = res;
+            return TRUE;
+        }
+        else {
+            old = res;
+        }
     }
 
-    *buf = objspace->par_mark.list;
-    objspace->par_mark.list = objspace->par_mark.list->next;
-    return TRUE;
+    return FALSE;
 }
 
 static int
@@ -1315,8 +1348,7 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
 
     if(!(res = push_bottom(deque, data))) {
         /* overflowed */
-        add_par_marklist(objspace, &markbuffer);
-
+        markbuffer = par_markbuffer_alloc(objspace);
         for (i = 0; i < PAR_MARKBUFFER_SIZE; i++) {
             if (!(pop_bottom(deque, &tmp))) {
                 gc_debug("pop fail\n");
@@ -1324,6 +1356,7 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
             }
             markbuffer->buf[i] = tmp;
         }
+        atomic_add_par_marklist(objspace, markbuffer);
 
         res = push_bottom(deque, data);
         gc_assert(res == TRUE, "must be success");
@@ -1342,12 +1375,13 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
                   "not empty? %d, %d\n",
                   deque->bottom, deque->age.fields.top);
 
-        if (!unlink_par_marklist(objspace, &markbuffer)) {
+        if (!atomic_unlink_par_marklist(objspace, &markbuffer)) {
             return FALSE;
         }
 
         for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
-            res = push_bottom(deque, markbuffer->buf[i]);
+            if (markbuffer->buf[i] != NULL)
+                res = push_bottom(deque, markbuffer->buf[i]);
             gc_assert(res == TRUE, "must be true\n");
         }
         res = pop_bottom(deque, data);
@@ -4242,29 +4276,31 @@ rb_gc_test(void)
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_worker = tmp_num_worker;
 
-    printf("add_par_marklist\n");
-    add_par_marklist(objspace, &buf);
+    printf("atomic_add_par_marklist\n");
+    buf = par_markbuffer_alloc(objspace);
+    atomic_add_par_marklist(objspace, buf);
     gc_assert(buf != 0, "not zero\n");
     gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
               objspace->par_mark.list, buf);
     gc_assert(objspace->par_mark.list->next == 0, "not zero\n");
     gc_assert(objspace->par_mark.list->buf[1] == 0, "not zero\n");
 
-    add_par_marklist(objspace, &buf);
+    buf = par_markbuffer_alloc(objspace);
+    atomic_add_par_marklist(objspace, buf);
     gc_assert(buf != 0, "not zero\n");
     gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
               objspace->par_mark.list, buf);
     gc_assert(objspace->par_mark.list->next != 0, "not zero\n");
     gc_assert(objspace->par_mark.list->next->next == 0, "not zero\n");
 
-    printf("unlink_par_marklist\n");
-    res = unlink_par_marklist(objspace, &buf);
+    printf("atomic_unlink_par_marklist\n");
+    res = atomic_unlink_par_marklist(objspace, &buf);
     gc_assert(res != 0, "not zero\n");
     gc_assert(buf != 0, "not zero\n");
-    res = unlink_par_marklist(objspace, &buf);
+    res = atomic_unlink_par_marklist(objspace, &buf);
     gc_assert(res != 0, "not zero\n");
     gc_assert(buf != 0, "not zero\n");
-    res = unlink_par_marklist(objspace, &buf);
+    res = atomic_unlink_par_marklist(objspace, &buf);
     gc_assert(res == 0, "not zero\n");
 
 
