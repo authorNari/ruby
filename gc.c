@@ -1380,7 +1380,7 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
         }
 
         for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
-            if (markbuffer->buf[i] != NULL)
+            if (markbuffer->buf[i] != 0)
                 res = push_bottom(deque, markbuffer->buf[i]);
             gc_assert(res == TRUE, "must be true\n");
         }
@@ -1427,7 +1427,7 @@ init_par_mark(rb_objspace_t *objspace)
     int i;
 
     /* TODO: want to guess the cpu processer number. */
-    objspace->par_mark.num_worker = 8;
+    objspace->par_mark.num_worker = 2;
     p = malloc(sizeof(struct deque) * objspace->par_mark.num_worker);
     if (!p) {
         return rb_memerror();
@@ -2930,7 +2930,7 @@ gc_par_gray_marks(rb_objspace_t *objspace)
 //    num_worker = 1;
 #endif
 
-    for(i = 0; i < num_worker; i++) {
+    for(i = 1; i < num_worker; i++) {
         objspace->par_mark.workers[i].task = gc_do_gray_marks;
         objspace->par_mark.workers[i].finished = 0;
         rb_gc_par_worker_create(&objspace->par_mark.workers[i]);
@@ -2940,7 +2940,11 @@ gc_par_gray_marks(rb_objspace_t *objspace)
                  objspace->par_mark.workers[i].thread_id);
     }
 
-    for(i = 0; i < num_worker; i++) {
+    objspace->par_mark.workers[0].finished = 0;
+    rb_gc_par_worker_set_native(&objspace->par_mark.workers[0]);
+    gc_do_gray_marks((void *)&objspace->par_mark.workers[0]);
+
+    for(i = 1; i < num_worker; i++) {
         if(!objspace->par_mark.workers[i].finished) {
             rb_gc_par_worker_join(objspace->par_mark.workers[i].thread_id);
             gc_debug("join woker: %d, thread_id: %p\n",
