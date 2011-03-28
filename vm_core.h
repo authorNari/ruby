@@ -488,7 +488,7 @@ typedef struct rb_thread_struct {
 
 #if defined(HAVE_PTHREAD_H)
 typedef struct rb_gc_par_worker_struct {
-    int index;
+    size_t index;
     rb_thread_id_t thread_id;
     void (*task) (void *worker);
     struct deque *local_deque;
