@@ -2920,7 +2920,9 @@ gc_do_gray_marks(void *w)
             }
             p++;
         }
-        gc_debug("worker: %d, acquired_slot: %p\n", worker->index, acquired_slot);
+        gc_debug("worker: %d, acquired_slot: %p, start: %p, end: %p\n",
+                 worker->index, acquired_slot,
+                 acquired_slot->start, acquired_slot->end);
         acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
@@ -4122,6 +4124,13 @@ rb_gc_test(void)
     struct par_markbuffer *buf = 0;
     rb_gc_par_worker_t *worker;
 
+    objspace->deque_set.deques[1].bottom = 0;
+    objspace->deque_set.deques[1].age.data = 0;
+    objspace->deque_set.deques[2].bottom = 0;
+    objspace->deque_set.deques[2].age.data = 0;
+    objspace->deque_set.deques[3].bottom = 0;
+    objspace->deque_set.deques[3].age.data = 0;
+
     printf("deque size test\n");
     deque->age.fields.top = GC_DEQUE_SIZE_MASK;
     deque->age.fields.top = deque_increment(deque->age.fields.top);
@@ -4266,9 +4275,9 @@ rb_gc_test(void)
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
 
     printf("steal\n");
+    objspace->deque_set.length = 4;
     deque->bottom = 0;
-    deque->age.fields.top = 0;
-    deque->age.fields.tag = 0;
+    deque->age.data = 0;
     push_bottom(&objspace->deque_set.deques[1], 11);
     push_bottom(&objspace->deque_set.deques[1], 12);
     push_bottom(&objspace->deque_set.deques[1], 13);
@@ -4291,6 +4300,7 @@ rb_gc_test(void)
     gc_assert(data == 31, "data: %d\n", (int)data);
     res = steal(objspace, 0, &data);
     gc_assert(res == 0, "res: %d\n", res);
+    objspace->deque_set.length = objspace->par_mark.num_worker;
 
     push_bottom(&objspace->deque_set.deques[0], 1);
     tmp_num_worker = objspace->par_mark.num_worker;
@@ -4369,11 +4379,11 @@ rb_gc_test(void)
 
 
     printf("gc_atomic_acquired_slot_finger\n");
-    objspace->par_mark.slot_finger_index = 0;
+    objspace->par_mark.slot_finger_index = -1;
     res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
-    gc_assert(objspace->par_mark.slot_finger_index == 1, "%d\n",
+    gc_assert(objspace->par_mark.slot_finger_index == 0, "%d\n",
               objspace->par_mark.slot_finger_index);
-    gc_assert(res == (VALUE)&objspace->heap.sorted[1], "not eq\n");
+    gc_assert(res == (VALUE)&objspace->heap.sorted[0], "not eq\n");
 
     objspace->par_mark.slot_finger_index = heaps_used-2;
     res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
