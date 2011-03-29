@@ -1459,6 +1459,8 @@ init_par_mark(rb_objspace_t *objspace)
             &objspace->deque_set.deques[i];
         objspace->par_mark.workers[i].index = i;
     }
+
+    objspace->par_mark.slot_finger_index = -1;
 }
 
 static int
@@ -2948,12 +2950,14 @@ gc_par_gray_marks(rb_objspace_t *objspace)
 
     num_worker = objspace->par_mark.num_worker;
 #ifdef GC_DEBUG
-//    num_worker = 1;
+    num_worker = 1;
 #endif
 
     for(i = 1; i < num_worker; i++) {
         objspace->par_mark.workers[i].task = gc_do_gray_marks;
         objspace->par_mark.workers[i].finished = 0;
+        objspace->deque_set.deques[i].bottom = 0;
+        objspace->deque_set.deques[i].age.data = 0;
         rb_gc_par_worker_create(&objspace->par_mark.workers[i]);
         gc_debug("worker: %p, task: %p, thread_id: %p\n",
                  &objspace->par_mark.workers[i],
@@ -2961,6 +2965,8 @@ gc_par_gray_marks(rb_objspace_t *objspace)
                  (void *)objspace->par_mark.workers[i].thread_id);
     }
 
+    objspace->deque_set.deques[0].bottom = 0;
+    objspace->deque_set.deques[0].age.data = 0;
     objspace->par_mark.workers[0].finished = 0;
     rb_gc_par_worker_set_native(&objspace->par_mark.workers[0]);
     gc_do_gray_marks((void *)&objspace->par_mark.workers[0]);
@@ -2975,7 +2981,8 @@ gc_par_gray_marks(rb_objspace_t *objspace)
         objspace->par_mark.workers[i].task = 0;
         objspace->par_mark.workers[i].thread_id = 0;
     }
-    objspace->par_mark.slot_finger_index = 0;
+
+    objspace->par_mark.slot_finger_index = -1;
     objspace->par_mark.slot_finger = NULL;
 }
 
