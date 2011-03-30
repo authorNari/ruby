@@ -50,8 +50,6 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) /* empty */
 #endif
 
-#define GC_DEBUG
-
 #ifdef GC_DEBUG
 #include <assert.h>
 #include <debug.h>
@@ -2925,11 +2923,12 @@ gc_do_gray_marks(void *w)
         gc_debug("worker: %d, acquired_slot: %p, start: %p, end: %p\n",
                  worker->index, acquired_slot,
                  acquired_slot->start, acquired_slot->end);
-        acquired_slot = gc_atomic_acquired_slot_finger(objspace);
-    }
 
-    while(pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
-        gc_mark_children(objspace, (VALUE)p, 0);
+        while(pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
+            gc_mark_children(objspace, (VALUE)p, 0);
+        }
+
+        acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
     while(steal(objspace, worker->index, (VALUE *)&p)) {
@@ -4026,7 +4025,7 @@ gc_profile_result(void)
     if (objspace->profile.run && objspace->profile.count) {
 	result = rb_sprintf("GC %d invokes.\n", NUM2INT(gc_count(0)));
         index = 1;
-	rb_str_cat2(result, "Index    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n");
+        rb_str_catf(result, "ParallelMarkThreads %d.\n", objspace->par_mark.num_worker);
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
 #if !GC_PROFILE_MORE_DETAIL
