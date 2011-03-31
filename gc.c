@@ -105,6 +105,7 @@ static unsigned int initial_malloc_limit   = GC_MALLOC_LIMIT;
 static unsigned int initial_heap_min_slots = HEAP_MIN_SLOTS;
 #endif
 static unsigned int initial_free_min       = FREE_MIN;
+static unsigned int initial_par_mark_threads = 0;
 
 #define nomem_error GET_VM()->special_exceptions[ruby_error_nomemory]
 
@@ -1435,9 +1436,6 @@ set_num_parallel_workers(rb_objspace_t *objspace)
         cpus = 8 + (cpus - 8) * (5/8);
     }
     objspace->par_mark.num_worker = cpus;
-#ifdef GC_DEBUG
-    objspace->par_mark.num_worker = 4;
-#endif
     gc_debug("set_num_parallel_workers: %d\n", cpus);
 }
 
@@ -1447,7 +1445,16 @@ init_par_mark(rb_objspace_t *objspace)
     void *p;
     size_t i;
 
-    set_num_parallel_workers(objspace);
+    if (initial_par_mark_threads < 1) {
+        set_num_parallel_workers(objspace);
+    }
+    else {
+        objspace->par_mark.num_worker = initial_par_mark_threads;
+    }
+    if (objspace->par_mark.num_worker < 1) {
+        return;
+    }
+
     p = malloc(sizeof(struct deque) * objspace->par_mark.num_worker);
     if (!p) {
         return rb_memerror();

@@ -53,6 +53,7 @@ ruby_init(void)
 
     ruby_init_stack((void *)&state);
     Init_BareVM();
+    rb_gc_set_params();
     Init_heap();
 
     PUSH_TAG();
