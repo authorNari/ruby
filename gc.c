@@ -1373,11 +1373,13 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
             return FALSE;
         }
 
+        gc_debug("getback: deque(%p)\n", deque);
         for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
             if (markbuffer->buf[i] != 0)
                 res = push_bottom(deque, markbuffer->buf[i]);
             gc_assert(res == TRUE, "must be true\n");
         }
+        free(markbuffer);
         res = pop_bottom(deque, data);
         gc_assert(res == TRUE, "must be true\n");
     }
