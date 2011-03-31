@@ -107,6 +107,25 @@ static unsigned int initial_heap_min_slots = HEAP_MIN_SLOTS;
 static unsigned int initial_free_min       = FREE_MIN;
 static unsigned int initial_par_mark_threads = 0;
 
+static size_t
+parallel_worker_threads()
+{
+    size_t cpus;
+
+#ifdef _WIN32
+    cpus = 1;
+#else
+    cpus = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+
+    if (cpus > 8) {
+        cpus = 8 + (cpus - 8) * (5/8);
+    }
+    gc_debug("num_parallel_workers: %d\n", cpus);
+
+    return cpus;
+}
+
 #define nomem_error GET_VM()->special_exceptions[ruby_error_nomemory]
 
 #define MARK_STACK_MAX 1024
@@ -1424,36 +1443,14 @@ pop_top(struct deque *deque, VALUE *data)
 }
 
 static void
-set_num_parallel_workers(rb_objspace_t *objspace)
-{
-    int cpus;
-
-#ifdef _WIN32
-    cpus = 1;
-#else
-    cpus = sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-
-    if (cpus > 8) {
-        cpus = 8 + (cpus - 8) * (5/8);
-    }
-    objspace->par_mark.num_worker = cpus;
-    gc_debug("set_num_parallel_workers: %d\n", cpus);
-}
-
-static void
 init_par_mark(rb_objspace_t *objspace)
 {
     void *p;
     size_t i;
 
-    if (initial_par_mark_threads < 1) {
-        set_num_parallel_workers(objspace);
-    }
-    else {
-        objspace->par_mark.num_worker = initial_par_mark_threads;
-    }
+    objspace->par_mark.num_worker = initial_par_mark_threads;
     if (objspace->par_mark.num_worker < 1) {
+        gc_debug("init_par_mark cancel.\n");
         return;
     }
 
@@ -2065,7 +2062,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
-    if (objspace->par_mark.num_worker <= 1) {
+    if (objspace->par_mark.num_worker < 1) {
 #endif
         if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
             if (!mark_stack_overflow) {
@@ -3043,7 +3040,7 @@ gc_marks(rb_objspace_t *objspace)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
-    if (objspace->par_mark.num_worker > 1) {
+    if (objspace->par_mark.num_worker >= 1) {
         gc_par_gray_marks(objspace);
     }
 #endif
