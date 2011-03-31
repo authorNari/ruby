@@ -1346,6 +1346,7 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
     if(!(res = push_bottom(deque, data))) {
         gc_debug("overflowed: deque(%p), bottom(%d), top(%d)\n",
                  deque, deque->bottom, deque->age.fields.top);
+
         /* overflowed */
         markbuffer = par_markbuffer_alloc(objspace);
         for (i = 0; i < PAR_MARKBUFFER_SIZE; i++) {
@@ -1380,9 +1381,10 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
 
         gc_debug("getback: deque(%p)\n", deque);
         for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
-            if (markbuffer->buf[i] != 0)
+            if (markbuffer->buf[i] != 0) {
                 res = push_bottom(deque, markbuffer->buf[i]);
-            gc_assert(res == TRUE, "must be true\n");
+                gc_assert(res == TRUE, "must be true\n");
+            }
         }
         free(markbuffer);
         res = pop_bottom(deque, data);
@@ -4199,6 +4201,11 @@ rb_gc_test(void)
     deque->bottom = GC_DEQUE_MAX;
     res = push_bottom(deque, 2);
     gc_assert(!res, "true?");
+
+    deque->age.fields.top = 0;
+    deque->bottom = GC_DEQUE_SIZE_MASK;
+    res = push_bottom(deque, 2);
+    gc_assert(res, "false?");
 
     deque->age.fields.top = 5;
     deque->bottom = 2;
