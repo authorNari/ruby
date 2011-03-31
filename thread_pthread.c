@@ -406,10 +406,13 @@ rb_gc_par_worker_from_native(void)
     return pthread_getspecific(ruby_gc_par_native_worker_key);
 }
 
-int
-rb_gc_par_worker_set_native(rb_gc_par_worker_t *worker)
+static void
+gc_par_worker_set_native(rb_gc_par_worker_t *worker)
 {
-    return pthread_setspecific(ruby_gc_par_native_worker_key, worker) == 0;
+    int r = pthread_setspecific(ruby_gc_par_native_worker_key, worker);
+    if (r != 0) {
+	rb_bug_errno("pthread_cond_signal", r);
+    }
 }
 
 
@@ -788,16 +791,38 @@ native_thread_create(rb_thread_t *th)
 }
 
 static void *
-gc_par_worker_run_task(void *worker)
+gc_par_worker_thread_start(void *worker)
 {
     rb_gc_par_worker_t *w = (rb_gc_par_worker_t *)worker;
-    rb_gc_par_worker_set_native(w);
-    w->task((void *)w);
+    gc_par_worker_set_native(w);
+
+    while (TRUE) {
+        native_mutex_lock(&w->wait_lock);
+        while(w->task == NULL) {
+            native_cond_wait(&w->wait_cond, &w->wait_lock);
+        }
+        native_mutex_unlock(&w->wait_lock);
+
+        w->task(w);
+
+        w->task = NULL;
+        rb_thread_run(w->main_thread);
+    }
     return NULL;
 }
 
+void
+rb_gc_par_worker_run_task(rb_gc_par_worker_t *worker,
+                          void (*task) (rb_gc_par_worker_t *worker),
+                          VALUE main_thread)
+{
+    worker->task = task;
+    worker->main_thread = main_thread;
+    native_cond_signal(&worker->wait_cond);
+}
+
 int
-rb_gc_par_worker_create(rb_gc_par_worker_t *worker)
+rb_gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
 {
     int err = 0;
 
@@ -812,7 +837,10 @@ rb_gc_par_worker_create(rb_gc_par_worker_t *worker)
     CHECK_ERR(pthread_attr_setstacksize(&attr, stack_size));
 #endif
 
-    err = pthread_create(&worker->thread_id, &attr, gc_par_worker_run_task, worker);
+    native_mutex_initialize(&worker->wait_lock);
+    native_cond_initialize(&worker->wait_cond);
+
+    err = pthread_create(&worker->thread_id, &attr, gc_par_worker_thread_start, worker);
     thread_debug("create: %p (%d)\n", (void *)worker, err);
     CHECK_ERR(pthread_attr_destroy(&attr));
 
@@ -827,20 +855,6 @@ native_thread_join(pthread_t th)
 	rb_raise(rb_eThreadError, "native_thread_join() failed (%d)", err);
     }
 }
-
-int
-rb_gc_par_worker_join(pthread_t th)
-{
-    int err;
-    err = pthread_join(th, 0);
-    if (err) {
-        thread_debug("rb_gc_par_worker_join() failed (%d)\n", err);
-    }
-    return err;
-    /* TODO: error handling */
-}
-
-
 #if USE_NATIVE_THREAD_PRIORITY
 
 static void

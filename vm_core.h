@@ -490,9 +490,11 @@ typedef struct rb_thread_struct {
 typedef struct rb_gc_par_worker_struct {
     size_t index;
     rb_thread_id_t thread_id;
-    void (*task) (void *worker);
+    pthread_cond_t wait_cond;
+    rb_thread_lock_t wait_lock;
+    void (*task) (struct rb_gc_par_worker_struct *worker);
+    VALUE main_thread;
     struct deque *local_deque;
-    int finished;
 } rb_gc_par_worker_t;
 #endif
 
@@ -503,9 +505,8 @@ typedef struct rb_gc_par_worker_struct {
 /* thread.c */
 #if defined(HAVE_PTHREAD_H)
 rb_gc_par_worker_t *rb_gc_par_worker_from_native(void);
-int rb_gc_par_worker_set_native(rb_gc_par_worker_t *);
-int rb_gc_par_worker_create(rb_gc_par_worker_t *);
-int rb_gc_par_worker_join(rb_thread_id_t);
+int rb_gc_par_worker_thread_create(rb_gc_par_worker_t *);
+void rb_gc_par_worker_run_task(rb_gc_par_worker_t *, void (*) (rb_gc_par_worker_t *), VALUE);
 #endif
 
 /* iseq.c */
