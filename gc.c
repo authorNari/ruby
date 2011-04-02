@@ -374,11 +374,14 @@ struct deque {
     union deque_age age;
 };
 
-#define PAR_MARKBUFFER_SIZE (_GC_DEQUE_SIZE / 10)
+/* 8 * 1028 * 1028 */
+#define PAR_MARKBUFFER_SIZE 8454272
 
 struct par_markbuffer {
-    VALUE buf[PAR_MARKBUFFER_SIZE];
-    struct par_markbuffer *next;
+    VALUE *buffer;
+    size_t index;
+    size_t size;
+    int overflowed;
 };
 
 typedef struct rb_objspace {
@@ -421,7 +424,7 @@ typedef struct rb_objspace {
 	int overflow;
     } markstack;
     struct {
-        struct par_markbuffer *list;
+        struct par_markbuffer buffer;
         size_t slot_finger_index;
         struct sorted_heaps_slot *slot_finger;
         size_t num_worker;
@@ -1244,67 +1247,6 @@ push_bottom(struct deque *deque, VALUE data)
     return FALSE;
 }
 
-static struct par_markbuffer *
-par_markbuffer_alloc(rb_objspace_t *objspace)
-{
-    struct par_markbuffer *buf;
-
-    buf = (struct par_markbuffer *)malloc(sizeof(struct par_markbuffer));
-
-    if (buf == 0) {
-	during_gc = 0;
-	rb_memerror();
-    }
-    MEMZERO((void *)buf, struct par_markbuffer, 1);
-
-    return buf;
-}
-
-static void
-atomic_add_par_marklist(rb_objspace_t *objspace, struct par_markbuffer *new)
-{
-    struct par_markbuffer *old, *res;
-
-    old = objspace->par_mark.list;
-    while(TRUE) {
-        res = (struct par_markbuffer *)atomic_compxchg_ptr(
-            (VALUE *)&objspace->par_mark.list,
-            (VALUE)old, (VALUE)new);
-        if (res == old) {
-            new->next = res;
-            return;
-        }
-        else {
-            old = res;
-        }
-    }
-    gc_assert(0, "don't pass\n");
-    return;
-}
-
-static int
-atomic_unlink_par_marklist(rb_objspace_t *objspace, struct par_markbuffer **buf)
-{
-    struct par_markbuffer *old, *res, *new;
-
-    old = objspace->par_mark.list;
-    while(old != NULL) {
-        new = old->next;
-        res = (struct par_markbuffer *)atomic_compxchg_ptr(
-            (VALUE *)&objspace->par_mark.list,
-            (VALUE)old, (VALUE)new);
-        if (res == old) {
-            *buf = res;
-            return TRUE;
-        }
-        else {
-            old = res;
-        }
-    }
-
-    return FALSE;
-}
-
 static int
 pop_bottom(struct deque *deque, VALUE *data)
 {
@@ -1355,30 +1297,58 @@ pop_bottom(struct deque *deque, VALUE *data)
     return FALSE;
 }
 
+#define PAR_MARKBUFFER_TRANSEFER_SIZE 10
+
+static void
+move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
+{
+    VALUE tmp;
+    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
+
+    /* TOOD: must mutator lock */
+    if(mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE > mbuf->size) {
+        mbuf->overflowed = TRUE;
+        gc_debug("parallel mark abort. mark buffer overflow.\n");
+        return;
+    }
+    while(mbuf->index < 10 && pop_bottom(deque, &tmp)) {
+        mbuf->buffer[mbuf->index] = tmp;
+        mbuf->index++;
+    }
+}
+
+static int
+get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
+{
+    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
+    size_t to;
+    int res;
+
+    /* TOOD: must mutator lock */
+    if(mbuf->index == 0) {
+        return FALSE;
+    }
+    to = mbuf->index - PAR_MARKBUFFER_TRANSEFER_SIZE;
+    while(mbuf->index > to && mbuf->index != 0) {
+        mbuf->index--;
+        res = push_bottom(deque, mbuf->buffer[mbuf->index]);
+        gc_assert(res == TRUE, "must be true\n");
+    }
+    return TRUE;
+}
+
+
 static void
 push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
 {
     int res, i;
-    VALUE tmp;
-    struct par_markbuffer *markbuffer;
 
     if(!(res = push_bottom(deque, data))) {
-        gc_debug("overflowed: deque(%p), bottom(%d), top(%d)\n",
-                 deque, deque->bottom, deque->age.fields.top);
-
         /* overflowed */
-        markbuffer = par_markbuffer_alloc(objspace);
-        for (i = 0; i < PAR_MARKBUFFER_SIZE; i++) {
-            if (!(pop_bottom(deque, &tmp))) {
-                gc_debug("pop fail(%d)\n", i);
-                break;
-            }
-            markbuffer->buf[i] = tmp;
-        }
-        atomic_add_par_marklist(objspace, markbuffer);
+        move_dates_to_mark_buffer(objspace, deque);
 
         res = push_bottom(deque, data);
-        gc_assert(res == TRUE, "must be success");
+        gc_assert(res == TRUE, "must be true\n");
     }
 }
 
@@ -1386,7 +1356,6 @@ static int
 pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *data)
 {
     int i, res;
-    struct par_markbuffer *markbuffer;
 
     if(!(pop_bottom(deque, data))) {
         /* empty */
@@ -1394,18 +1363,11 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
                   "not empty? %d, %d\n",
                   deque->bottom, deque->age.fields.top);
 
-        if (!atomic_unlink_par_marklist(objspace, &markbuffer)) {
+        gc_debug("getback: deque(%p)\n", deque);
+        if (!get_back_dates_from_mark_buffer(objspace, deque)) {
             return FALSE;
         }
 
-        gc_debug("getback: deque(%p)\n", deque);
-        for (i = PAR_MARKBUFFER_SIZE-1; i >= 0; i--) {
-            if (markbuffer->buf[i] != 0) {
-                res = push_bottom(deque, markbuffer->buf[i]);
-                gc_assert(res == TRUE, "must be true\n");
-            }
-        }
-        free(markbuffer);
         res = pop_bottom(deque, data);
         gc_assert(res == TRUE, "must be true\n");
     }
@@ -1475,6 +1437,13 @@ init_par_mark(rb_objspace_t *objspace)
             return rb_memerror();
         }
     }
+
+    p = malloc(sizeof(VALUE) * PAR_MARKBUFFER_SIZE);
+    if (!p) {
+        return rb_memerror();
+    }
+    objspace->par_mark.buffer.buffer = (VALUE *)p;
+    objspace->par_mark.buffer.size = PAR_MARKBUFFER_SIZE;
 
     objspace->par_mark.slot_finger_index = -1;
 }
@@ -4129,7 +4098,7 @@ rb_gc_test(void)
     struct deque *deque = &objspace->deque_set.deques[0];
     size_t res, tmp_num_worker, i;
     VALUE data;
-    struct par_markbuffer *buf = 0;
+    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     rb_gc_par_worker_t *worker;
 
     objspace->deque_set.deques[1].bottom = 0;
@@ -4328,37 +4297,38 @@ rb_gc_test(void)
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_worker = tmp_num_worker;
 
-    printf("atomic_add_par_marklist\n");
-    buf = par_markbuffer_alloc(objspace);
-    atomic_add_par_marklist(objspace, buf);
-    gc_assert(buf != 0, "not zero\n");
-    gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
-              objspace->par_mark.list, buf);
-    gc_assert(objspace->par_mark.list->next == 0, "not zero\n");
-    gc_assert(objspace->par_mark.list->buf[1] == 0, "not zero\n");
+    printf("move_dates_to_mark_buffer\n");
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    for(i = 1;i < 11; i++) {
+        push_bottom(deque, i);
+    }
+    move_dates_to_mark_buffer(objspace, deque);
+    gc_assert(deque->bottom == 0, "bottom: (%d)\n", deque->bottom);
+    /* overflow */
+    mbuf->index = PAR_MARKBUFFER_SIZE;
+    push_bottom(deque, 1);
+    move_dates_to_mark_buffer(objspace, deque);
+    gc_assert(mbuf->overflowed == TRUE, "index: (%d)\n", mbuf->index);
+    gc_assert(deque->bottom == 1, "bottom: (%d)\n", deque->bottom);
+    mbuf->index = 0;
+    mbuf->overflowed = FALSE;
 
-    buf = par_markbuffer_alloc(objspace);
-    atomic_add_par_marklist(objspace, buf);
-    gc_assert(buf != 0, "not zero\n");
-    gc_assert(objspace->par_mark.list == buf, "%p : %p\n",
-              objspace->par_mark.list, buf);
-    gc_assert(objspace->par_mark.list->next != 0, "not zero\n");
-    gc_assert(objspace->par_mark.list->next->next == 0, "not zero\n");
-
-    printf("atomic_unlink_par_marklist\n");
-    res = atomic_unlink_par_marklist(objspace, &buf);
-    gc_assert(res != 0, "not zero\n");
-    gc_assert(buf != 0, "not zero\n");
-    res = atomic_unlink_par_marklist(objspace, &buf);
-    gc_assert(res != 0, "not zero\n");
-    gc_assert(buf != 0, "not zero\n");
-    res = atomic_unlink_par_marklist(objspace, &buf);
-    gc_assert(res == 0, "not zero\n");
-
+    printf("get_back_dates_from_mark_buffer\n");
+    mbuf->index = 10;
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    res = get_back_dates_from_mark_buffer(objspace, deque);
+    gc_assert(res == TRUE, "false?\n");
+    gc_assert(deque->datas[0] == 1, "(%d)\n", (int)deque->datas[0]);
+    gc_assert(deque->datas[9] == 10, "(%d)\n", (int)deque->datas[9]);
+    res = get_back_dates_from_mark_buffer(objspace, deque);
+    gc_assert(res == FALSE, "true?\n");
 
     printf("push_bottom_with_overflow\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
+    mbuf->index = 0;
     push_bottom_with_overflow(objspace, deque, 1);
     gc_assert(deque->datas[0] == 1, "eq\n");
 
@@ -4368,11 +4338,10 @@ rb_gc_test(void)
         push_bottom(deque, i+1);
     }
     push_bottom_with_overflow(objspace, deque, 2);
-    gc_assert(deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE] == 2,
-              "data %d\n", (int)deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_SIZE]);
-    gc_assert(objspace->par_mark.list != 0, "not zero\n");
-    gc_assert(objspace->par_mark.list->buf[0] == GC_DEQUE_MAX, "%d\n",
-              (int)objspace->par_mark.list->buf[0]);
+    gc_assert(deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_TRANSEFER_SIZE] == 2,
+              "data %d\n", (int)deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_TRANSEFER_SIZE]);
+    gc_assert(mbuf->index != 0, "not zero\n");
+    gc_assert(mbuf->buffer[0] == GC_DEQUE_MAX, "%d\n", (int)mbuf->buffer[0]);
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
