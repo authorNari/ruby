@@ -1302,16 +1302,18 @@ move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     VALUE tmp;
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
 
-    /* TOOD: must mutator lock */
+    rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
     if(mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE > mbuf->size) {
         mbuf->overflowed = TRUE;
         gc_debug("parallel mark abort. mark buffer overflow.\n");
+        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
         return;
     }
     while(mbuf->index < 10 && pop_bottom(deque, &tmp)) {
         mbuf->buffer[mbuf->index] = tmp;
         mbuf->index++;
     }
+    rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
 }
 
 static int
@@ -1321,8 +1323,9 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     size_t to;
     int res;
 
-    /* TOOD: must mutator lock */
+    rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
     if(mbuf->index == 0) {
+        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
         return FALSE;
     }
     to = mbuf->index - PAR_MARKBUFFER_TRANSEFER_SIZE;
@@ -1331,6 +1334,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
         res = push_bottom(deque, mbuf->buffer[mbuf->index]);
         gc_assert(res == TRUE, "must be true\n");
     }
+    rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
     return TRUE;
 }
 
@@ -1342,6 +1346,7 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
 
     if(!(res = push_bottom(deque, data))) {
         /* overflowed */
+        gc_debug("overflowed: deque(%p)\n", deque);
         move_dates_to_mark_buffer(objspace, deque);
 
         res = push_bottom(deque, data);
@@ -1360,10 +1365,10 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
                   "not empty? %d, %d\n",
                   deque->bottom, deque->age.fields.top);
 
-        gc_debug("getback: deque(%p)\n", deque);
         if (!get_back_dates_from_mark_buffer(objspace, deque)) {
             return FALSE;
         }
+        gc_debug("getback: deque(%p)\n", deque);
 
         res = pop_bottom(deque, data);
         gc_assert(res == TRUE, "must be true\n");
