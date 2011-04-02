@@ -379,6 +379,7 @@ static void remove_signal_thread_list(rb_thread_t *th);
 static rb_thread_lock_t signal_thread_list_lock;
 #endif
 
+static rb_thread_lock_t worker_thread_lock;
 static pthread_key_t ruby_native_thread_key;
 static pthread_key_t ruby_gc_par_native_worker_key;
 
@@ -430,6 +431,7 @@ Init_native_thread(void)
 #ifdef USE_SIGNAL_THREAD_LIST
     native_mutex_initialize(&signal_thread_list_lock);
 #endif
+    native_mutex_initialize(&worker_thread_lock);
     posix_signal(SIGVTALRM, null_func);
 }
 
@@ -822,7 +824,7 @@ rb_gc_par_worker_run_task(rb_gc_par_worker_t *worker,
 }
 
 int
-rb_gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
+gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
 {
     int err = 0;
 
@@ -846,6 +848,44 @@ rb_gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
 
     return err;
 }
+
+rb_gc_par_worker_group_t *
+rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
+{
+    size_t i;
+    rb_gc_par_worker_group_t *wgroup;
+
+    wgroup = (rb_gc_par_worker_group_t *)malloc(sizeof(rb_gc_par_worker_group_t));
+    if (wgroup == NULL) {
+        return NULL;
+    }
+
+    wgroup->num_workers = num;
+    wgroup->workers = workers;
+    native_mutex_initialize(&wgroup->lock);
+
+    for (i = 0; i < num; i++) {
+        if (gc_par_worker_thread_create(&workers[i])) {
+            return NULL;
+        }
+        workers[i].index = i;
+        workers[i].group = wgroup;
+    }
+    return wgroup;
+}
+
+void
+rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *wgroup)
+{
+    native_mutex_lock(&wgroup->lock);
+}
+
+void
+rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *wgroup)
+{
+    native_mutex_unlock(&wgroup->lock);
+}
+
 
 static void
 native_thread_join(pthread_t th)

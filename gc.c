@@ -427,13 +427,10 @@ typedef struct rb_objspace {
         struct par_markbuffer buffer;
         size_t slot_finger_index;
         struct sorted_heaps_slot *slot_finger;
-        size_t num_worker;
-        rb_gc_par_worker_t *workers;
-    } par_mark;
-    struct {
+        size_t num_workers;
+        rb_gc_par_worker_group_t *worker_group;
         struct deque *deques;
-        size_t length;
-    } deque_set;
+    } par_mark;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -1409,33 +1406,36 @@ init_par_mark(rb_objspace_t *objspace)
 {
     void *p;
     size_t i;
+    rb_gc_par_worker_t *workers;
+    size_t num_workers;
 
-    objspace->par_mark.num_worker = initial_par_mark_threads;
-    if (objspace->par_mark.num_worker < 1) {
+    objspace->par_mark.num_workers = num_workers = initial_par_mark_threads;
+    if (num_workers < 1) {
         gc_debug("init_par_mark cancel.\n");
         return;
     }
 
-    p = malloc(sizeof(struct deque) * objspace->par_mark.num_worker);
+    p = malloc(sizeof(struct deque) * num_workers);
     if (!p) {
         return rb_memerror();
     }
-    objspace->deque_set.deques = (struct deque *)p;
-    objspace->deque_set.length = objspace->par_mark.num_worker;
+    objspace->par_mark.deques = (struct deque *)p;
 
-    p = malloc(sizeof(rb_gc_par_worker_t) * objspace->par_mark.num_worker);
+    p = malloc(sizeof(rb_gc_par_worker_t) * num_workers);
     if (!p) {
         return rb_memerror();
     }
-    MEMZERO(p, rb_gc_par_worker_t, objspace->par_mark.num_worker);
-    objspace->par_mark.workers = (rb_gc_par_worker_t *)p;
-    for(i = 0; i < objspace->par_mark.num_worker; i++) {
-        objspace->par_mark.workers[i].local_deque =
-            &objspace->deque_set.deques[i];
-        objspace->par_mark.workers[i].index = i;
-        if (rb_gc_par_worker_thread_create(&objspace->par_mark.workers[i])) {
-            return rb_memerror();
-        }
+    MEMZERO(p, rb_gc_par_worker_t, num_workers);
+    workers = (rb_gc_par_worker_t *)p;
+    for (i = 0; i < num_workers; i++) {
+        workers[i].local_deque = &objspace->par_mark.deques[i];
+        workers[i].index = i;
+    }
+
+    objspace->par_mark.worker_group =
+        rb_gc_par_worker_group_create(num_workers, workers);
+    if (!objspace->par_mark.worker_group) {
+        return rb_memerror();
     }
 
     p = malloc(sizeof(VALUE) * PAR_MARKBUFFER_SIZE);
@@ -1454,10 +1454,10 @@ steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
     struct deque *tmp_deque, *res_deque = NULL;
     size_t res_size = 0, tmp_size = 0, i = 0;
 
-    if (objspace->deque_set.length > 2) {
-        for (i = 0; i < objspace->deque_set.length; i++) {
+    if (objspace->par_mark.num_workers > 2) {
+        for (i = 0; i < objspace->par_mark.num_workers; i++) {
             if (i != deque_index) {
-                tmp_deque = &objspace->deque_set.deques[i];
+                tmp_deque = &objspace->par_mark.deques[i];
                 tmp_size = size_deque(tmp_deque->bottom, tmp_deque->age.fields.top);
                 if (tmp_size > res_size) {
                     res_size = tmp_size;
@@ -1472,13 +1472,13 @@ steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
             return pop_top(res_deque, data);
         }
     }
-    else if (objspace->deque_set.length == 2) {
+    else if (objspace->par_mark.num_workers == 2) {
         i = (deque_index + 1) % 2;
-        return pop_top(&objspace->deque_set.deques[i], data);
+        return pop_top(&objspace->par_mark.deques[i], data);
     }
     else {
-        gc_assert(objspace->deque_set.length == 1,
-                  "should not call this function.");
+        gc_assert(objspace->par_mark.num_workers == 1,
+                  "should not call this function.\n");
         return FALSE;
     }
 }
@@ -2031,7 +2031,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
-    if (objspace->par_mark.num_worker < 1) {
+    if (objspace->par_mark.num_workers < 1) {
 #endif
         if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
             if (!mark_stack_overflow) {
@@ -2929,25 +2929,23 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
 static void
 gc_par_gray_marks(rb_objspace_t *objspace)
 {
-    int i, num_worker;
+    int i, num_workers;
     VALUE th;
+    rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
 
-    num_worker = objspace->par_mark.num_worker;
+    num_workers = objspace->par_mark.num_workers;
     th = rb_thread_current();
 
-    for(i = 0; i < num_worker; i++) {
-        objspace->deque_set.deques[i].bottom = 0;
-        objspace->deque_set.deques[i].age.data = 0;
-        rb_gc_par_worker_run_task(&objspace->par_mark.workers[i],
-                                  gc_do_gray_marks, th);
+    for(i = 0; i < num_workers; i++) {
+        objspace->par_mark.deques[i].bottom = 0;
+        objspace->par_mark.deques[i].age.data = 0;
+        rb_gc_par_worker_run_task(&workers[i], gc_do_gray_marks, th);
         gc_debug("worker: %p, task: %p, thread_id: %p\n",
-                 &objspace->par_mark.workers[i],
-                 objspace->par_mark.workers[i].task,
-                 (void *)objspace->par_mark.workers[i].thread_id);
+                 &workers[i], workers[i].task, (void *)workers[i].thread_id);
     }
 
-    for(i = 0; i < num_worker; i++) {
-        while(objspace->par_mark.workers[i].task != NULL) {
+    for(i = 0; i < num_workers; i++) {
+        while(workers[i].task != NULL) {
             rb_thread_sleep_forever();
         }
     }
@@ -3009,7 +3007,7 @@ gc_marks(rb_objspace_t *objspace)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
-    if (objspace->par_mark.num_worker >= 1) {
+    if (objspace->par_mark.num_workers >= 1) {
         gc_par_gray_marks(objspace);
     }
 #endif
@@ -3996,7 +3994,7 @@ gc_profile_result(void)
     if (objspace->profile.run && objspace->profile.count) {
 	result = rb_sprintf("GC %d invokes.\n", NUM2INT(gc_count(0)));
         index = 1;
-        rb_str_catf(result, "ParallelMarkThreads %d.\n", objspace->par_mark.num_worker);
+        rb_str_catf(result, "ParallelMarkThreads %d.\n", objspace->par_mark.num_workers);
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
 #if !GC_PROFILE_MORE_DETAIL
@@ -4095,18 +4093,19 @@ VALUE
 rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    struct deque *deque = &objspace->deque_set.deques[0];
-    size_t res, tmp_num_worker, i;
+    struct deque *deque = &objspace->par_mark.deques[0];
+    size_t res, tmp_num_workers, i;
     VALUE data;
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     rb_gc_par_worker_t *worker;
+    rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
 
-    objspace->deque_set.deques[1].bottom = 0;
-    objspace->deque_set.deques[1].age.data = 0;
-    objspace->deque_set.deques[2].bottom = 0;
-    objspace->deque_set.deques[2].age.data = 0;
-    objspace->deque_set.deques[3].bottom = 0;
-    objspace->deque_set.deques[3].age.data = 0;
+    objspace->par_mark.deques[1].bottom = 0;
+    objspace->par_mark.deques[1].age.data = 0;
+    objspace->par_mark.deques[2].bottom = 0;
+    objspace->par_mark.deques[2].age.data = 0;
+    objspace->par_mark.deques[3].bottom = 0;
+    objspace->par_mark.deques[3].age.data = 0;
 
     printf("deque size test\n");
     deque->age.fields.top = GC_DEQUE_SIZE_MASK;
@@ -4257,15 +4256,16 @@ rb_gc_test(void)
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
 
     printf("steal\n");
-    objspace->deque_set.length = 4;
+    tmp_num_workers = objspace->par_mark.num_workers;
+    objspace->par_mark.num_workers = 4;
     deque->bottom = 0;
     deque->age.data = 0;
-    push_bottom(&objspace->deque_set.deques[1], 11);
-    push_bottom(&objspace->deque_set.deques[1], 12);
-    push_bottom(&objspace->deque_set.deques[1], 13);
-    push_bottom(&objspace->deque_set.deques[2], 21);
-    push_bottom(&objspace->deque_set.deques[2], 22);
-    push_bottom(&objspace->deque_set.deques[3], 31);
+    push_bottom(&objspace->par_mark.deques[1], 11);
+    push_bottom(&objspace->par_mark.deques[1], 12);
+    push_bottom(&objspace->par_mark.deques[1], 13);
+    push_bottom(&objspace->par_mark.deques[2], 21);
+    push_bottom(&objspace->par_mark.deques[2], 22);
+    push_bottom(&objspace->par_mark.deques[3], 31);
     res = steal(objspace, 0, &data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 11, "data: %d\n", (int)data);
@@ -4282,20 +4282,20 @@ rb_gc_test(void)
     gc_assert(data == 31, "data: %d\n", (int)data);
     res = steal(objspace, 0, &data);
     gc_assert(res == 0, "res: %d\n", res);
-    objspace->deque_set.length = objspace->par_mark.num_worker;
+    objspace->par_mark.num_workers = tmp_num_workers;
 
-    push_bottom(&objspace->deque_set.deques[0], 1);
-    tmp_num_worker = objspace->par_mark.num_worker;
-    objspace->par_mark.num_worker = 2;
+    push_bottom(&objspace->par_mark.deques[0], 1);
+    tmp_num_workers = objspace->par_mark.num_workers;
+    objspace->par_mark.num_workers = 2;
     res = steal(objspace, 1, &data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 1, "data: %d\n", (int)data);
-    push_bottom(&objspace->deque_set.deques[1], 11);
+    push_bottom(&objspace->par_mark.deques[1], 11);
     res = steal(objspace, 0, &data);
     gc_assert(data == 11, "data: %d\n", (int)data);
     res = steal(objspace, 0, &data);
     gc_assert(res == 0, "res: %d\n", res);
-    objspace->par_mark.num_worker = tmp_num_worker;
+    objspace->par_mark.num_workers = tmp_num_workers;
 
     printf("move_dates_to_mark_buffer\n");
     deque->age.fields.top = 0;
@@ -4381,20 +4381,22 @@ rb_gc_test(void)
 
 
     printf("worker\n");
-    worker = &objspace->par_mark.workers[objspace->par_mark.num_worker-1];
-    gc_assert(worker->index == objspace->par_mark.num_worker-1, "?\n");
-    worker = &objspace->par_mark.workers[0];
+    worker = &workers[objspace->par_mark.num_workers-1];
+    gc_assert(worker->index == objspace->par_mark.num_workers-1,
+              "index(%d)?\n", worker->index);
+    worker = &workers[0];
     gc_assert(worker->index == 0, "?\n");
 
     printf("run task\n");
-    for(i = 0; i < objspace->par_mark.num_worker; i++) {
-        worker = &objspace->par_mark.workers[i];
+    gc_debug("objspace->par_mark.num_workers(%d)\n", objspace->par_mark.num_workers);
+    for(i = 0; i < objspace->par_mark.num_workers; i++) {
+        worker = &workers[i];
         gc_debug("worker: %p\n", worker);
         rb_gc_par_worker_run_task(worker, gc_par_print_test, rb_thread_current());
     }
 
-    for(i = 0; i < objspace->par_mark.num_worker; i++) {
-        worker = &objspace->par_mark.workers[i];
+    for(i = 0; i < objspace->par_mark.num_workers; i++) {
+        worker = &workers[i];
         while (worker->task != NULL){
             rb_thread_sleep_forever();
             gc_debug("worker->task: %p\n", worker->task);

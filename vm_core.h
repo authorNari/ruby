@@ -487,8 +487,15 @@ typedef struct rb_thread_struct {
 } rb_thread_t;
 
 #if defined(HAVE_PTHREAD_H)
+typedef struct rb_gc_par_worker_group_struct {
+    size_t num_workers;
+    struct rb_gc_par_worker_struct *workers;
+    rb_thread_lock_t lock;
+} rb_gc_par_worker_group_t;
+
 typedef struct rb_gc_par_worker_struct {
     size_t index;
+    rb_gc_par_worker_group_t *group;
     rb_thread_id_t thread_id;
     pthread_cond_t wait_cond;
     rb_thread_lock_t wait_lock;
@@ -505,8 +512,10 @@ typedef struct rb_gc_par_worker_struct {
 /* thread.c */
 #if defined(HAVE_PTHREAD_H)
 rb_gc_par_worker_t *rb_gc_par_worker_from_native(void);
-int rb_gc_par_worker_thread_create(rb_gc_par_worker_t *);
+rb_gc_par_worker_group_t *rb_gc_par_worker_group_create(size_t, rb_gc_par_worker_t *);
 void rb_gc_par_worker_run_task(rb_gc_par_worker_t *, void (*) (rb_gc_par_worker_t *), VALUE);
+void rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *);
+void rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *);
 #endif
 
 /* iseq.c */
