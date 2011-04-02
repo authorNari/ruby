@@ -50,8 +50,6 @@
 # define VALGRIND_MAKE_MEM_UNDEFINED(p, n) /* empty */
 #endif
 
-#define GC_DEBUG
-
 #ifdef GC_DEBUG
 #include <assert.h>
 #include <debug.h>
@@ -1300,6 +1298,7 @@ static void
 move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
 {
     VALUE tmp;
+    size_t to;
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
 
     rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
@@ -1309,7 +1308,8 @@ move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
         rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
         return;
     }
-    while(mbuf->index < 10 && pop_bottom(deque, &tmp)) {
+    to = mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE;
+    while(mbuf->index < to && pop_bottom(deque, &tmp)) {
         mbuf->buffer[mbuf->index] = tmp;
         mbuf->index++;
     }
@@ -1359,7 +1359,7 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
 {
     int i, res;
 
-    if(!(pop_bottom(deque, data))) {
+    if(!(res = pop_bottom(deque, data))) {
         /* empty */
         gc_assert(is_empty_deque(deque->bottom, deque->age.fields.top),
                   "not empty? %d, %d\n",
@@ -1371,9 +1371,8 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
         gc_debug("getback: deque(%p)\n", deque);
 
         res = pop_bottom(deque, data);
-        gc_assert(res == TRUE, "must be true\n");
     }
-    return TRUE;
+    return res;
 }
 
 static int
@@ -2934,26 +2933,14 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
 static void
 gc_par_gray_marks(rb_objspace_t *objspace)
 {
-    int i, num_workers;
-    VALUE th;
-    rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
+    size_t i;
 
-    num_workers = objspace->par_mark.num_workers;
-    th = rb_thread_current();
-
-    for(i = 0; i < num_workers; i++) {
+    for(i = 0; i < objspace->par_mark.num_workers; i++) {
         objspace->par_mark.deques[i].bottom = 0;
         objspace->par_mark.deques[i].age.data = 0;
-        rb_gc_par_worker_run_task(&workers[i], gc_do_gray_marks, th);
-        gc_debug("worker: %p, task: %p, thread_id: %p\n",
-                 &workers[i], workers[i].task, (void *)workers[i].thread_id);
     }
-
-    for(i = 0; i < num_workers; i++) {
-        while(workers[i].task != NULL) {
-            rb_thread_sleep_forever();
-        }
-    }
+    rb_gc_par_worker_group_run_tasks(objspace->par_mark.worker_group,
+                                     gc_do_gray_marks, rb_thread_current());
 
     objspace->par_mark.slot_finger_index = -1;
     objspace->par_mark.slot_finger = NULL;
@@ -4394,19 +4381,8 @@ rb_gc_test(void)
 
     printf("run task\n");
     gc_debug("objspace->par_mark.num_workers(%d)\n", objspace->par_mark.num_workers);
-    for(i = 0; i < objspace->par_mark.num_workers; i++) {
-        worker = &workers[i];
-        gc_debug("worker: %p\n", worker);
-        rb_gc_par_worker_run_task(worker, gc_par_print_test, rb_thread_current());
-    }
-
-    for(i = 0; i < objspace->par_mark.num_workers; i++) {
-        worker = &workers[i];
-        while (worker->task != NULL){
-            rb_thread_sleep_forever();
-            gc_debug("worker->task: %p\n", worker->task);
-        }
-    }
+    rb_gc_par_worker_group_run_tasks(worker->group,
+                                     gc_par_print_test, rb_thread_current());
 
     return Qnil;
 }

@@ -796,31 +796,57 @@ static void *
 gc_par_worker_thread_start(void *worker)
 {
     rb_gc_par_worker_t *w = (rb_gc_par_worker_t *)worker;
+    size_t prev_seq_number = 0;
+
     gc_par_worker_set_native(w);
 
     while (TRUE) {
-        native_mutex_lock(&w->wait_lock);
-        while(w->task == NULL) {
-            native_cond_wait(&w->wait_cond, &w->wait_lock);
+        native_mutex_lock(&w->group->wait_lock);
+        while(w->task == NULL && w->seq_number == prev_seq_number) {
+            thread_debug("worker thread waiting: index(%d)\n", w->index);
+            native_cond_wait(&w->group->wait_cond, &w->group->wait_lock);
+            native_mutex_unlock(&w->group->wait_lock);
+            w->task = w->group->task;
+            w->seq_number = w->group->seq_number;
+            thread_debug("catch signal: seq_number(%d), prev(%d)\n",
+                         w->seq_number, prev_seq_number);
         }
-        native_mutex_unlock(&w->wait_lock);
 
+        thread_debug("work task: index(%d)\n", w->index);
         w->task(w);
 
+        native_mutex_lock(&w->group->lock);
+        w->group->finisheds++;
+        native_mutex_unlock(&w->group->lock);
+
         w->task = NULL;
-        rb_thread_run(w->main_thread);
+        rb_thread_run(w->group->main_thread);
+        prev_seq_number = w->seq_number;
     }
     return NULL;
 }
 
 void
-rb_gc_par_worker_run_task(rb_gc_par_worker_t *worker,
+rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *wgroup,
                           void (*task) (rb_gc_par_worker_t *worker),
                           VALUE main_thread)
 {
-    worker->task = task;
-    worker->main_thread = main_thread;
-    native_cond_signal(&worker->wait_cond);
+    wgroup->task = task;
+    wgroup->main_thread = main_thread;
+    wgroup->seq_number++;
+    wgroup->finisheds = 0;
+
+    native_cond_broadcast(&wgroup->wait_cond);
+
+    while (wgroup->finisheds < wgroup->num_workers) {
+        thread_debug("waiting in worker: %d/%d\n",
+                     wgroup->finisheds, wgroup->num_workers);
+        rb_thread_sleep_forever();
+    }
+
+    thread_debug("finished workers: %d\n", wgroup->finisheds);
+    wgroup->task = NULL;
+    wgroup->main_thread = 0;
 }
 
 int
@@ -839,9 +865,6 @@ gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
     CHECK_ERR(pthread_attr_setstacksize(&attr, stack_size));
 #endif
 
-    native_mutex_initialize(&worker->wait_lock);
-    native_cond_initialize(&worker->wait_cond);
-
     err = pthread_create(&worker->thread_id, &attr, gc_par_worker_thread_start, worker);
     thread_debug("create: %p (%d)\n", (void *)worker, err);
     CHECK_ERR(pthread_attr_destroy(&attr));
@@ -859,17 +882,20 @@ rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
     if (wgroup == NULL) {
         return NULL;
     }
+    MEMZERO(wgroup, rb_gc_par_worker_group_t, 1);
 
     wgroup->num_workers = num;
     wgroup->workers = workers;
     native_mutex_initialize(&wgroup->lock);
+    native_mutex_initialize(&wgroup->wait_lock);
+    native_cond_initialize(&wgroup->wait_cond);
 
     for (i = 0; i < num; i++) {
+        workers[i].index = i;
+        workers[i].group = wgroup;
         if (gc_par_worker_thread_create(&workers[i])) {
             return NULL;
         }
-        workers[i].index = i;
-        workers[i].group = wgroup;
     }
     return wgroup;
 }
