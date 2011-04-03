@@ -928,6 +928,10 @@ gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
     thread_debug("create - stack size: %lu\n", (unsigned long)stack_size);
     CHECK_ERR(pthread_attr_setstacksize(&attr, stack_size));
 #endif
+
+#ifdef HAVE_PTHREAD_ATTR_SETINHERITSCHED
+    CHECK_ERR(pthread_attr_setinheritsched(&attr, PTHREAD_INHERIT_SCHED));
+#endif
     CHECK_ERR(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
 
     err = pthread_create(&worker->thread_id, &attr, gc_par_worker_thread_start, worker);
