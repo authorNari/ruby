@@ -551,6 +551,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+    rb_gc_par_worker_group_stop(objspace->par_mark.worker_group);
     free(objspace);
 }
 #else
@@ -2939,8 +2940,8 @@ gc_par_gray_marks(rb_objspace_t *objspace)
         objspace->par_mark.deques[i].bottom = 0;
         objspace->par_mark.deques[i].age.data = 0;
     }
-    rb_gc_par_worker_group_run_tasks(objspace->par_mark.worker_group,
-                                     gc_do_gray_marks, rb_thread_current());
+    rb_gc_par_worker_group_run_task(objspace->par_mark.worker_group,
+                                     gc_do_gray_marks);
 
     objspace->par_mark.slot_finger_index = -1;
     objspace->par_mark.slot_finger = NULL;
@@ -4381,8 +4382,8 @@ rb_gc_test(void)
 
     printf("run task\n");
     gc_debug("objspace->par_mark.num_workers(%d)\n", objspace->par_mark.num_workers);
-    rb_gc_par_worker_group_run_tasks(worker->group,
-                                     gc_par_print_test, rb_thread_current());
+    rb_gc_par_worker_group_run_task(worker->group,
+                                     gc_par_print_test);
 
     return Qnil;
 }
