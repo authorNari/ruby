@@ -289,13 +289,14 @@ getrusage_time(void)
 #define GC_PROF_DEC_LIVE_NUM
 #endif
 
-#define DEQUE_STATS 0
+#define DEQUE_STATS 1
 
 #if DEQUE_STATS
 enum deque_stat_type {
     PUSH,
     POP_BOTTOM,
-    POP_BOTTOM_WITH_CAS,
+    POP_BOTTOM_WITH_CAS_WIN,
+    POP_BOTTOM_WITH_CAS_LOSE,
     POP_TOP,
     OVERFLOW,
     OVERFLOW_MAX,
@@ -384,6 +385,9 @@ struct deque {
     VALUE datas[_GC_DEQUE_SIZE];
     size_t bottom;
     union deque_age age;
+#if DEQUE_STATS
+        size_t deque_stats[LAST_STAT_ID];
+#endif
 };
 
 /* 8 * 1028 * 1028 */
@@ -449,9 +453,6 @@ typedef struct rb_objspace {
 	size_t count;
 	size_t size;
 	double invoke_time;
-#if DEQUE_STATS
-        size_t deque_stats[LAST_STAT_ID];
-#endif
     } profile;
     struct gc_list *global_list;
     size_t count;
@@ -489,7 +490,7 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
 #if DEQUE_STATS
-#define count_deque_stats(type) ++rb_objspace.profile.deque_stats[type]
+#define count_deque_stats(type) ++deque->deque_stats[type]
 #else
 #define count_deque_stats(type)
 #endif
@@ -1299,7 +1300,6 @@ pop_bottom(struct deque *deque, VALUE *data)
     }
 
     /* only one data in deque */
-    count_deque_stats(POP_BOTTOM_WITH_CAS);
     new_age.fields.top = local_bottom;
     new_age.fields.tag = old_age.fields.tag + 1;
     if (local_bottom == old_age.fields.top) {
@@ -1310,10 +1310,12 @@ pop_bottom(struct deque *deque, VALUE *data)
             /* before pop_top() */
             gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
                       "bottom == (top - 1)\n");
+            count_deque_stats(POP_BOTTOM_WITH_CAS_WIN);
             return TRUE;
         }
     }
     /* after pop_top() */
+    count_deque_stats(POP_BOTTOM_WITH_CAS_LOSE);
     deque->age = new_age;
     gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
               "bottom == (top - 1)\n");
@@ -4050,13 +4052,20 @@ gc_profile_result(void)
 #endif
 
 #if DEQUE_STATS
-	rb_str_cat2(result, "\n\n");
-	rb_str_cat2(result, "Deque stats.\n");
-        rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
-                    objspace->profile.deque_stats[PUSH], objspace->profile.deque_stats[POP_BOTTOM],
-                    objspace->profile.deque_stats[POP_BOTTOM_WITH_CAS], objspace->profile.deque_stats[POP_TOP],
-                    objspace->profile.deque_stats[OVERFLOW], objspace->profile.deque_stats[OVERFLOW_MAX],
-                    objspace->profile.deque_stats[GETBACK]);
+        rb_str_cat2(result, "\n");
+	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
+            struct deque *deque = &objspace->par_mark.deques[i];
+            rb_str_catf(result, "Deque(%d) stats.\n", i+1);
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
+                        deque->deque_stats[PUSH],
+                        deque->deque_stats[POP_BOTTOM],
+                        deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
+                        deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
+                        deque->deque_stats[POP_TOP],
+                        deque->deque_stats[OVERFLOW],
+                        deque->deque_stats[OVERFLOW_MAX],
+                        deque->deque_stats[GETBACK]);
+        }
 #endif
     }
     else {
