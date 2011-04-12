@@ -2869,23 +2869,23 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
 static struct sorted_heaps_slot *
 gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
 {
-    size_t tmp_index, acquire_index, res;
+    size_t old_index, acquire_index, res;
 
-    tmp_index = objspace->par_mark.slot_finger_index;
-    acquire_index = tmp_index + 1;
+    old_index = objspace->par_mark.slot_finger_index;
+    acquire_index = old_index + 1;
 
     while(acquire_index < heaps_used) {
         res = atomic_compxchg_ptr((VALUE *)&objspace->par_mark.slot_finger_index,
-                                  (VALUE)tmp_index,
+                                  (VALUE)old_index,
                                   (VALUE)acquire_index);
 
-        if (res == acquire_index) {
+        if (res == old_index) {
             objspace->par_mark.slot_finger = &objspace->heap.sorted[acquire_index];
             return objspace->par_mark.slot_finger;
         }
         else {
-            tmp_index = res;
-            acquire_index = tmp_index + 1;
+            old_index = res;
+            acquire_index = old_index + 1;
         }
     }
 
