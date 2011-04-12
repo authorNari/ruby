@@ -153,39 +153,11 @@ typedef struct gc_profile_record {
 } gc_profile_record;
 
 static double
-getrusage_time(void)
+gettimeofday_time(void)
 {
-#ifdef RUSAGE_SELF
-    struct rusage usage;
-    struct timeval time;
-    getrusage(RUSAGE_SELF, &usage);
-    time = usage.ru_utime;
-    return time.tv_sec + time.tv_usec * 1e-6;
-#elif defined _WIN32
-    FILETIME creation_time, exit_time, kernel_time, user_time;
-    ULARGE_INTEGER ui;
-    LONG_LONG q;
-    double t;
-
-    if (GetProcessTimes(GetCurrentProcess(),
-			&creation_time, &exit_time, &kernel_time, &user_time) == 0)
-    {
-	return 0.0;
-    }
-    memcpy(&ui, &user_time, sizeof(FILETIME));
-    q = ui.QuadPart / 10L;
-    t = (DWORD)(q % 1000000L) * 1e-6;
-    q /= 1000000L;
-#ifdef __GNUC__
-    t += q;
-#else
-    t += (double)(DWORD)(q >> 16) * (1 << 16);
-    t += (DWORD)q & ~(~0 << 16);
-#endif
-    return t;
-#else
-    return 0.0;
-#endif
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec + tv.tv_usec * 1e-6;
 }
 
 #define GC_PROF_TIMER_START do {\
@@ -202,14 +174,14 @@ getrusage_time(void)
 		rb_bug("gc_profile malloc or realloc miss");\
 	    }\
 	    MEMZERO(&objspace->profile.record[count], gc_profile_record, 1);\
-	    gc_time = getrusage_time();\
+	    gc_time = gettimeofday_time();\
 	    objspace->profile.record[count].gc_invoke_time = gc_time - objspace->profile.invoke_time;\
 	}\
     } while(0)
 
 #define GC_PROF_TIMER_STOP(marked) do {\
 	if (objspace->profile.run) {\
-	    gc_time = getrusage_time() - gc_time;\
+	    gc_time = gettimeofday_time() - gc_time;\
 	    if (gc_time < 0) gc_time = 0;\
 	    objspace->profile.record[count].gc_time = gc_time;\
 	    objspace->profile.record[count].is_marked = !!(marked);\
@@ -225,13 +197,13 @@ getrusage_time(void)
 #define GC_PROF_MARK_TIMER_START double mark_time = 0;\
     do {\
 	if (objspace->profile.run) {\
-	    mark_time = getrusage_time();\
+	    mark_time = gettimeofday_time();\
 	}\
     } while(0)
 
 #define GC_PROF_MARK_TIMER_STOP do {\
 	if (objspace->profile.run) {\
-	    mark_time = getrusage_time() - mark_time;\
+	    mark_time = gettimeofday_time() - mark_time;\
 	    if (mark_time < 0) mark_time = 0;\
 	    objspace->profile.record[objspace->profile.count].gc_mark_time = mark_time;\
 	}\
@@ -239,13 +211,13 @@ getrusage_time(void)
 
 #define GC_PROF_SWEEP_TIMER_START do {\
 	if (objspace->profile.run) {\
-	    sweep_time = getrusage_time();\
+	    sweep_time = gettimeofday_time();\
 	}\
     } while(0)
 
 #define GC_PROF_SWEEP_TIMER_STOP do {\
 	if (objspace->profile.run) {\
-	    sweep_time = getrusage_time() - sweep_time;\
+	    sweep_time = gettimeofday_time() - sweep_time;\
 	    if (sweep_time < 0) sweep_time = 0;\
 	    objspace->profile.record[count].gc_sweep_time = sweep_time;\
 	}\
@@ -1540,7 +1512,7 @@ init_heap(rb_objspace_t *objspace)
     add_heap_slots(objspace, HEAP_MIN_SLOTS / HEAP_OBJ_LIMIT);
 
     heaps_inc = 0;
-    objspace->profile.invoke_time = getrusage_time();
+    objspace->profile.invoke_time = gettimeofday_time();
     finalizer_table = st_init_numtable();
 }
 
