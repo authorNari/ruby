@@ -3993,6 +3993,7 @@ gc_profile_result(void)
 	result = rb_sprintf("GC %d invokes.\n", NUM2INT(gc_count(0)));
         index = 1;
         rb_str_catf(result, "ParallelMarkThreads %d.\n", objspace->par_mark.num_workers);
+        rb_str_cat2(result, "Index    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n");
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
 #if !GC_PROFILE_MORE_DETAIL
