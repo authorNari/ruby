@@ -548,7 +548,9 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
-    rb_gc_par_worker_group_stop(objspace->par_mark.worker_group);
+    if (objspace->par_mark.num_workers > 0) {
+        rb_gc_par_worker_group_stop(objspace->par_mark.worker_group);
+    }
     free(objspace);
 }
 #else
