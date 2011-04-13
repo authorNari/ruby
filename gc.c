@@ -273,6 +273,7 @@ enum deque_stat_type {
     OVERFLOW,
     OVERFLOW_MAX,
     GETBACK,
+    AQUIRE_SLOT,
     LAST_STAT_ID
 };
 #endif
@@ -463,8 +464,10 @@ static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
 #if DEQUE_STATS
 #define count_deque_stats(type) ++deque->deque_stats[type]
+#define count_cancel_deque_stats(type) --deque->deque_stats[type]
 #else
 #define count_deque_stats(type)
+#define count_cancel_deque_stats(type)
 #endif
 
 
@@ -1315,6 +1318,7 @@ move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     }
     to = mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE;
     while(mbuf->index < to && pop_bottom(deque, &tmp)) {
+        count_cancel_deque_stats(POP_BOTTOM);
         mbuf->buffer[mbuf->index] = tmp;
         mbuf->index++;
     }
@@ -1337,6 +1341,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     while(mbuf->index > to && mbuf->index != 0) {
         mbuf->index--;
         res = push_bottom(deque, mbuf->buffer[mbuf->index]);
+        count_cancel_deque_stats(PUSH);
         gc_assert(res == TRUE, "must be true\n");
     }
     rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
@@ -2901,14 +2906,15 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
 {
     struct sorted_heaps_slot *acquired_slot;
     RVALUE *p;
-    struct deque *local_deque;
+    struct deque *deque;
     rb_objspace_t *objspace = &rb_objspace;
 
     acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     worker = rb_gc_par_worker_from_native();
-    local_deque = worker->local_deque;
+    deque = worker->local_deque;
 
     while (acquired_slot != NULL) {
+        count_deque_stats(AQUIRE_SLOT);
         p = acquired_slot->start;
         while (p < acquired_slot->end) {
             if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
@@ -2920,17 +2926,16 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
                  worker->index, acquired_slot,
                  acquired_slot->start, acquired_slot->end);
 
-        while(pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
+        while(pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
             gc_mark_children(objspace, (VALUE)p, 0);
         }
-
         acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
     while (steal(objspace, worker->index, (VALUE *)&p)) {
         gc_mark_children(objspace, (VALUE)p, 0);
 
-        while (pop_bottom_with_get_back(objspace, local_deque, (VALUE *)&p)) {
+        while (pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
             gc_mark_children(objspace, (VALUE)p, 0);
         }
     }
@@ -4031,7 +4036,7 @@ gc_profile_result(void)
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
             struct deque *deque = &objspace->par_mark.deques[i];
             rb_str_catf(result, "Deque(%d) stats.\n", i+1);
-            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d, aquire_slot: %d\n",
                         deque->deque_stats[PUSH],
                         deque->deque_stats[POP_BOTTOM],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
@@ -4039,7 +4044,8 @@ gc_profile_result(void)
                         deque->deque_stats[POP_TOP],
                         deque->deque_stats[OVERFLOW],
                         deque->deque_stats[OVERFLOW_MAX],
-                        deque->deque_stats[GETBACK]);
+                        deque->deque_stats[GETBACK],
+                        deque->deque_stats[AQUIRE_SLOT]);
         }
 #endif
     }
