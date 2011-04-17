@@ -2042,7 +2042,8 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
     obj->as.basic.flags |= FL_MARK;
-    objspace->heap.live_num++;
+    if (!objspace->par_mark.num_workers)
+        objspace->heap.live_num++;
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
@@ -2093,7 +2094,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
     obj->as.basic.flags |= FL_MARK;
-    objspace->heap.live_num++;
+    if (!objspace->par_mark.num_workers)
+        objspace->heap.live_num++;
 
   marking:
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -2918,6 +2920,7 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
         p = acquired_slot->start;
         while (p < acquired_slot->end) {
             if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
+                worker->marked_objects++;
                 gc_mark_children(objspace, (VALUE)p, 0);
             }
             p++;
@@ -2927,15 +2930,18 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
                  acquired_slot->start, acquired_slot->end);
 
         while(pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
+            worker->marked_objects++;
             gc_mark_children(objspace, (VALUE)p, 0);
         }
         acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
     while (steal(objspace, worker->index, (VALUE *)&p)) {
+        worker->marked_objects++;
         gc_mark_children(objspace, (VALUE)p, 0);
 
         while (pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
+            worker->marked_objects++;
             gc_mark_children(objspace, (VALUE)p, 0);
         }
     }
@@ -2953,6 +2959,11 @@ gc_par_gray_marks(rb_objspace_t *objspace)
     rb_gc_par_worker_group_run_task(objspace->par_mark.worker_group,
                                      gc_do_gray_marks);
 
+    for(i = 0; i < objspace->par_mark.num_workers; i++) {
+        objspace->heap.live_num +=
+            objspace->par_mark.worker_group->workers[i].marked_objects;
+        objspace->par_mark.worker_group->workers[i].marked_objects = 0;
+    }
     objspace->par_mark.slot_finger_index = -1;
     objspace->par_mark.slot_finger = NULL;
 }

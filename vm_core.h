@@ -505,6 +505,7 @@ typedef struct rb_gc_par_worker_struct {
     rb_gc_par_worker_group_t *group;
     rb_thread_id_t thread_id;
     struct deque *local_deque;
+    size_t marked_objects;
 } rb_gc_par_worker_t;
 #endif
 
