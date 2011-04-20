@@ -415,7 +415,7 @@ typedef struct rb_objspace {
     struct {
         struct par_markbuffer buffer;
         size_t slot_finger_index;
-        struct sorted_heaps_slot *slot_finger;
+        RVALUE *slot_finger_end;
         size_t num_workers;
         rb_gc_par_worker_group_t *worker_group;
         struct deque *deques;
@@ -1346,7 +1346,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     return TRUE;
 }
 
-static void
+static inline void
 push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
 {
     int res, i;
@@ -2076,8 +2076,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
     }
     else {
         /* passed gray object? */
-        if (objspace->par_mark.slot_finger != NULL &&
-            obj <= objspace->par_mark.slot_finger->end) {
+        if (obj <= objspace->par_mark.slot_finger_end) {
             push_bottom_with_overflow(objspace, w->local_deque, (VALUE)obj);
         }
     }
@@ -2899,8 +2898,8 @@ gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
                                   (VALUE)acquire_index);
 
         if (res == old_index) {
-            objspace->par_mark.slot_finger = &objspace->heap.sorted[acquire_index];
-            return objspace->par_mark.slot_finger;
+            objspace->par_mark.slot_finger_end = objspace->heap.sorted[acquire_index].end;
+            return &objspace->heap.sorted[acquire_index];
         }
         else {
             old_index = res;
@@ -2975,7 +2974,7 @@ gc_par_gray_marks(rb_objspace_t *objspace)
         objspace->par_mark.worker_group->workers[i].marked_objects = 0;
     }
     objspace->par_mark.slot_finger_index = -1;
-    objspace->par_mark.slot_finger = NULL;
+    objspace->par_mark.slot_finger_end = NULL;
 }
 
 #endif
