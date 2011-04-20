@@ -1751,8 +1751,8 @@ init_mark_stack(rb_objspace_t *objspace)
 
 #define MARK_STACK_EMPTY (mark_stack_ptr == mark_stack)
 
-static void gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev);
-static void gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev);
+static void gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w);
+static void gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w);
 
 static void
 gc_mark_all(rb_objspace_t *objspace)
@@ -1766,7 +1766,7 @@ gc_mark_all(rb_objspace_t *objspace)
 	while (p < pend) {
 	    if ((p->as.basic.flags & FL_MARK) &&
 		(p->as.basic.flags != FL_MARK)) {
-		gc_mark_children(objspace, (VALUE)p, 0);
+		gc_mark_children(objspace, (VALUE)p, 0, NULL);
 	    }
 	    p++;
 	}
@@ -1785,7 +1785,7 @@ gc_mark_rest(rb_objspace_t *objspace)
     init_mark_stack(objspace);
     while (p != tmp_arry) {
 	p--;
-	gc_mark_children(objspace, *p, 0);
+	gc_mark_children(objspace, *p, 0, NULL);
     }
 }
 
@@ -1818,14 +1818,14 @@ is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
 }
 
 static void
-mark_locations_array(rb_objspace_t *objspace, register VALUE *x, register long n)
+mark_locations_array(rb_objspace_t *objspace, register VALUE *x, register long n, rb_gc_par_worker_t *w)
 {
     VALUE v;
     while (n--) {
         v = *x;
         VALGRIND_MAKE_MEM_DEFINED(&v, sizeof(v));
 	if (is_pointer_to_heap(objspace, (void *)v)) {
-	    gc_mark(objspace, v, 0);
+	    gc_mark(objspace, v, 0, w);
 	}
 	x++;
     }
@@ -1835,10 +1835,11 @@ static void
 gc_mark_locations(rb_objspace_t *objspace, VALUE *start, VALUE *end)
 {
     long n;
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
 
     if (end <= start) return;
     n = end - start;
-    mark_locations_array(objspace, start, n);
+    mark_locations_array(objspace, start, n, w);
 }
 
 void
@@ -1852,23 +1853,25 @@ rb_gc_mark_locations(VALUE *start, VALUE *end)
 struct mark_tbl_arg {
     rb_objspace_t *objspace;
     int lev;
+    rb_gc_par_worker_t *worker;
 };
 
 static int
 mark_entry(ID key, VALUE value, st_data_t data)
 {
     struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, value, arg->lev);
+    gc_mark(arg->objspace, value, arg->lev, arg->worker);
     return ST_CONTINUE;
 }
 
 static void
-mark_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_tbl(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 {
     struct mark_tbl_arg arg;
     if (!tbl || tbl->num_entries == 0) return;
     arg.objspace = objspace;
     arg.lev = lev;
+    arg.worker = w;
     st_foreach(tbl, mark_entry, (st_data_t)&arg);
 }
 
@@ -1876,68 +1879,72 @@ static int
 mark_key(VALUE key, VALUE value, st_data_t data)
 {
     struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, key, arg->lev);
+    gc_mark(arg->objspace, key, arg->lev, arg->worker);
     return ST_CONTINUE;
 }
 
 static void
-mark_set(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_set(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 {
     struct mark_tbl_arg arg;
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
+    arg.worker = w;
     st_foreach(tbl, mark_key, (st_data_t)&arg);
 }
 
 void
 rb_mark_set(st_table *tbl)
 {
-    mark_set(&rb_objspace, tbl, 0);
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    mark_set(&rb_objspace, tbl, 0, w);
 }
 
 static int
 mark_keyvalue(VALUE key, VALUE value, st_data_t data)
 {
     struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, key, arg->lev);
-    gc_mark(arg->objspace, value, arg->lev);
+    gc_mark(arg->objspace, key, arg->lev, arg->worker);
+    gc_mark(arg->objspace, value, arg->lev, arg->worker);
     return ST_CONTINUE;
 }
 
 static void
-mark_hash(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_hash(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 {
     struct mark_tbl_arg arg;
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
+    arg.worker = w;
     st_foreach(tbl, mark_keyvalue, (st_data_t)&arg);
 }
 
 void
 rb_mark_hash(st_table *tbl)
 {
-    mark_hash(&rb_objspace, tbl, 0);
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    mark_hash(&rb_objspace, tbl, 0, w);
 }
 
 static void
-mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me, int lev)
+mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me, int lev, rb_gc_par_worker_t *w)
 {
     const rb_method_definition_t *def = me->def;
 
-    gc_mark(objspace, me->klass, lev);
+    gc_mark(objspace, me->klass, lev, w);
     if (!def) return;
     switch (def->type) {
       case VM_METHOD_TYPE_ISEQ:
-	gc_mark(objspace, def->body.iseq->self, lev);
+	gc_mark(objspace, def->body.iseq->self, lev, w);
 	break;
       case VM_METHOD_TYPE_BMETHOD:
-	gc_mark(objspace, def->body.proc, lev);
+	gc_mark(objspace, def->body.proc, lev, w);
 	break;
       case VM_METHOD_TYPE_ATTRSET:
       case VM_METHOD_TYPE_IVAR:
-	gc_mark(objspace, def->body.attr.location, lev);
+	gc_mark(objspace, def->body.attr.location, lev, w);
 	break;
       default:
 	break; /* ignore */
@@ -1947,24 +1954,26 @@ mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me, int lev)
 void
 rb_mark_method_entry(const rb_method_entry_t *me)
 {
-    mark_method_entry(&rb_objspace, me, 0);
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    mark_method_entry(&rb_objspace, me, 0, w);
 }
 
 static int
 mark_method_entry_i(ID key, const rb_method_entry_t *me, st_data_t data)
 {
     struct mark_tbl_arg *arg = (void*)data;
-    mark_method_entry(arg->objspace, me, arg->lev);
+    mark_method_entry(arg->objspace, me, arg->lev, arg->worker);
     return ST_CONTINUE;
 }
 
 static void
-mark_m_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_m_tbl(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 {
     struct mark_tbl_arg arg;
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
+    arg.worker = w;
     st_foreach(tbl, mark_method_entry_i, (st_data_t)&arg);
 }
 
@@ -1986,17 +1995,18 @@ static int
 mark_const_entry_i(ID key, const rb_const_entry_t *ce, st_data_t data)
 {
     struct mark_tbl_arg *arg = (void*)data;
-    gc_mark(arg->objspace, ce->value, arg->lev);
+    gc_mark(arg->objspace, ce->value, arg->lev, arg->worker);
     return ST_CONTINUE;
 }
 
 static void
-mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev)
+mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 {
     struct mark_tbl_arg arg;
     if (!tbl) return;
     arg.objspace = objspace;
     arg.lev = lev;
+    arg.worker = w;
     st_foreach(tbl, mark_const_entry_i, (st_data_t)&arg);
 }
 
@@ -2017,21 +2027,23 @@ rb_free_const_table(st_table *tbl)
 void
 rb_mark_tbl(st_table *tbl)
 {
-    mark_tbl(&rb_objspace, tbl, 0);
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    mark_tbl(&rb_objspace, tbl, 0, w);
 }
 
 void
 rb_gc_mark_maybe(VALUE obj)
 {
     if (is_pointer_to_heap(&rb_objspace, (void *)obj)) {
-	gc_mark(&rb_objspace, obj, 0);
+        rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+	gc_mark(&rb_objspace, obj, 0, w);
     }
 }
 
 #define GC_LEVEL_MAX 250
 
 static void
-gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
+gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
 {
     register RVALUE *obj;
 
@@ -2059,15 +2071,14 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
             }
             return;
         }
-        gc_mark_children(objspace, ptr, lev+1);
+        gc_mark_children(objspace, ptr, lev+1, NULL);
 #ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
         /* passed gray object? */
         if (objspace->par_mark.slot_finger != NULL &&
             obj <= objspace->par_mark.slot_finger->end) {
-            rb_gc_par_worker_t *worker = rb_gc_par_worker_from_native();
-            push_bottom_with_overflow(objspace, worker->local_deque, (VALUE)obj);
+            push_bottom_with_overflow(objspace, w->local_deque, (VALUE)obj);
         }
     }
 #endif
@@ -2076,11 +2087,12 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 void
 rb_gc_mark(VALUE ptr)
 {
-    gc_mark(&rb_objspace, ptr, 0);
+    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    gc_mark(&rb_objspace, ptr, 0, w);
 }
 
 static void
-gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
+gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
 {
     register RVALUE *obj = RANY(ptr);
 
@@ -2117,7 +2129,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_RESBODY:
 	  case NODE_CLASS:
 	  case NODE_BLOCK_PASS:
-	    gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev);
+            gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev, w);
 	    /* fall through */
 	  case NODE_BLOCK:	/* 1,3 */
 	  case NODE_OPTBLOCK:
@@ -2131,7 +2143,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_DEFS:
 	  case NODE_OP_ASGN1:
 	  case NODE_ARGS:
-	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev, w);
 	    /* fall through */
 	  case NODE_SUPER:	/* 3 */
 	  case NODE_FCALL:
@@ -2158,7 +2170,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_ALIAS:
 	  case NODE_VALIAS:
 	  case NODE_ARGSCAT:
-	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev, w);
 	    /* fall through */
 	  case NODE_GASGN:	/* 2 */
 	  case NODE_LASGN:
@@ -2194,7 +2206,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_SCOPE:	/* 2,3 */
 	  case NODE_CDECL:
 	  case NODE_OPT_ARG:
-	    gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev);
+	    gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev, w);
 	    ptr = (VALUE)obj->as.node.u2.node;
 	    goto again;
 
@@ -2220,32 +2232,32 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_ALLOCA:
 	    mark_locations_array(objspace,
 				 (VALUE*)obj->as.node.u1.value,
-				 obj->as.node.u3.cnt);
+				 obj->as.node.u3.cnt, w);
 	    ptr = (VALUE)obj->as.node.u2.node;
 	    goto again;
 
 	  default:		/* unlisted NODE */
 	    if (is_pointer_to_heap(objspace, obj->as.node.u1.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+		gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev, w);
 	    }
 	    if (is_pointer_to_heap(objspace, obj->as.node.u2.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev);
+		gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev, w);
 	    }
 	    if (is_pointer_to_heap(objspace, obj->as.node.u3.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev);
+		gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev, w);
 	    }
 	}
 	return;			/* no need to mark class. */
     }
 
-    gc_mark(objspace, obj->as.basic.klass, lev);
+    gc_mark(objspace, obj->as.basic.klass, lev, w);
     switch (BUILTIN_TYPE(obj)) {
       case T_ICLASS:
       case T_CLASS:
       case T_MODULE:
-	mark_m_tbl(objspace, RCLASS_M_TBL(obj), lev);
-	mark_tbl(objspace, RCLASS_IV_TBL(obj), lev);
-	mark_const_tbl(objspace, RCLASS_CONST_TBL(obj), lev);
+        mark_m_tbl(objspace, RCLASS_M_TBL(obj), lev, w);
+        mark_tbl(objspace, RCLASS_IV_TBL(obj), lev, w);
+	mark_const_tbl(objspace, RCLASS_CONST_TBL(obj), lev, w);
 	ptr = RCLASS_SUPER(obj);
 	goto again;
 
@@ -2258,13 +2270,13 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	    long i, len = RARRAY_LEN(obj);
 	    VALUE *ptr = RARRAY_PTR(obj);
 	    for (i=0; i < len; i++) {
-		gc_mark(objspace, *ptr++, lev);
+		gc_mark(objspace, *ptr++, lev, w);
 	    }
 	}
 	break;
 
       case T_HASH:
-	mark_hash(objspace, obj->as.hash.ntbl, lev);
+        mark_hash(objspace, obj->as.hash.ntbl, lev, w);
 	ptr = obj->as.hash.ifnone;
 	goto again;
 
@@ -2291,24 +2303,24 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
             long i, len = ROBJECT_NUMIV(obj);
 	    VALUE *ptr = ROBJECT_IVPTR(obj);
             for (i  = 0; i < len; i++) {
-		gc_mark(objspace, *ptr++, lev);
+		gc_mark(objspace, *ptr++, lev, w);
             }
         }
 	break;
 
       case T_FILE:
         if (obj->as.file.fptr) {
-            gc_mark(objspace, obj->as.file.fptr->pathv, lev);
-            gc_mark(objspace, obj->as.file.fptr->tied_io_for_writing, lev);
-            gc_mark(objspace, obj->as.file.fptr->writeconv_asciicompat, lev);
-            gc_mark(objspace, obj->as.file.fptr->writeconv_pre_ecopts, lev);
-            gc_mark(objspace, obj->as.file.fptr->encs.ecopts, lev);
-            gc_mark(objspace, obj->as.file.fptr->write_lock, lev);
+            gc_mark(objspace, obj->as.file.fptr->pathv, lev, w);
+            gc_mark(objspace, obj->as.file.fptr->tied_io_for_writing, lev, w);
+            gc_mark(objspace, obj->as.file.fptr->writeconv_asciicompat, lev, w);
+            gc_mark(objspace, obj->as.file.fptr->writeconv_pre_ecopts, lev, w);
+            gc_mark(objspace, obj->as.file.fptr->encs.ecopts, lev, w);
+            gc_mark(objspace, obj->as.file.fptr->write_lock, lev, w);
         }
         break;
 
       case T_REGEXP:
-        gc_mark(objspace, obj->as.regexp.src, lev);
+        gc_mark(objspace, obj->as.regexp.src, lev, w);
         break;
 
       case T_FLOAT:
@@ -2317,7 +2329,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	break;
 
       case T_MATCH:
-	gc_mark(objspace, obj->as.match.regexp, lev);
+	gc_mark(objspace, obj->as.match.regexp, lev, w);
 	if (obj->as.match.str) {
 	    ptr = obj->as.match.str;
 	    goto again;
@@ -2325,13 +2337,13 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	break;
 
       case T_RATIONAL:
-	gc_mark(objspace, obj->as.rational.num, lev);
-	gc_mark(objspace, obj->as.rational.den, lev);
+	gc_mark(objspace, obj->as.rational.num, lev, w);
+	gc_mark(objspace, obj->as.rational.den, lev, w);
 	break;
 
       case T_COMPLEX:
-	gc_mark(objspace, obj->as.complex.real, lev);
-	gc_mark(objspace, obj->as.complex.imag, lev);
+	gc_mark(objspace, obj->as.complex.real, lev, w);
+	gc_mark(objspace, obj->as.complex.imag, lev, w);
 	break;
 
       case T_STRUCT:
@@ -2340,7 +2352,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	    VALUE *ptr = RSTRUCT_PTR(obj);
 
 	    while (len--) {
-		gc_mark(objspace, *ptr++, lev);
+		gc_mark(objspace, *ptr++, lev, w);
 	    }
 	}
 	break;
@@ -2837,7 +2849,7 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th)
     SET_STACK_END;
     GET_STACK_BOUNDS(stack_start, stack_end, 1);
 
-    mark_locations_array(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v));
+    mark_locations_array(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), NULL);
 
     rb_gc_mark_locations(stack_start, stack_end);
 #ifdef __ia64
@@ -2845,7 +2857,7 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th)
 #endif
 #if defined(__mc68000__)
     mark_locations_array(objspace, (VALUE*)((char*)STACK_END + 2),
-			 (STACK_START - STACK_END));
+			 (STACK_START - STACK_END), NULL);
 #endif
 }
 
@@ -2919,7 +2931,7 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
         while (p < acquired_slot->end) {
             if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
                 worker->marked_objects++;
-                gc_mark_children(objspace, (VALUE)p, 0);
+                gc_mark_children(objspace, (VALUE)p, 0, worker);
             }
             p++;
         }
@@ -2929,18 +2941,18 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
 
         while(pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
             worker->marked_objects++;
-            gc_mark_children(objspace, (VALUE)p, 0);
+            gc_mark_children(objspace, (VALUE)p, 0, worker);
         }
         acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
     while (steal(objspace, worker->index, (VALUE *)&p)) {
         worker->marked_objects++;
-        gc_mark_children(objspace, (VALUE)p, 0);
+        gc_mark_children(objspace, (VALUE)p, 0, worker);
 
         while (pop_bottom_with_get_back(objspace, deque, (VALUE *)&p)) {
             worker->marked_objects++;
-            gc_mark_children(objspace, (VALUE)p, 0);
+            gc_mark_children(objspace, (VALUE)p, 0, worker);
         }
     }
 }
@@ -2987,7 +2999,7 @@ gc_marks(rb_objspace_t *objspace)
 
     th->vm->self ? rb_gc_mark(th->vm->self) : rb_vm_mark(th->vm);
 
-    mark_tbl(objspace, finalizer_table, 0);
+    mark_tbl(objspace, finalizer_table, 0, NULL);
     mark_current_machine_context(objspace, th);
 
     rb_gc_mark_symbols();
@@ -3000,7 +3012,7 @@ gc_marks(rb_objspace_t *objspace)
     rb_mark_end_proc();
     rb_gc_mark_global_tbl();
 
-    mark_tbl(objspace, rb_class_tbl, 0);
+    mark_tbl(objspace, rb_class_tbl, 0, NULL);
 
     /* mark generic instance variables for special constants */
     rb_mark_generic_ivar_tbl();
@@ -3554,7 +3566,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 	/* XXX: this loop will make no sense */
 	/* because mark will not be removed */
 	finalize_deferred(objspace);
-	mark_tbl(objspace, finalizer_table, 0);
+	mark_tbl(objspace, finalizer_table, 0, NULL);
 	st_foreach(finalizer_table, chain_finalized_object,
 		   (st_data_t)&deferred_final_list);
     } while (deferred_final_list);
