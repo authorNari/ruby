@@ -261,7 +261,7 @@ gettimeofday_time(void)
 #define GC_PROF_DEC_LIVE_NUM
 #endif
 
-#define DEQUE_STATS 1
+#define DEQUE_STATS 0
 
 #if DEQUE_STATS
 enum deque_stat_type {
@@ -1148,21 +1148,19 @@ assign_heap_slot(rb_objspace_t *objspace)
 }
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
-static size_t size_deque(size_t bottom, size_t top);
-
-static size_t
+static inline size_t
 deque_increment(size_t index)
 {
     return (index + 1) & GC_DEQUE_SIZE_MASK;
 }
 
-static size_t
+static inline size_t
 deque_decrement(size_t index)
 {
     return (index - 1) & GC_DEQUE_SIZE_MASK;
 }
 
-static size_t
+static inline size_t
 raw_size_deque(size_t bottom, size_t top)
 {
     size_t size;
@@ -1172,7 +1170,7 @@ raw_size_deque(size_t bottom, size_t top)
     return size;
 }
 
-static size_t
+static inline size_t
 size_deque(size_t bottom, size_t top)
 {
     size_t size;
@@ -1183,7 +1181,7 @@ size_deque(size_t bottom, size_t top)
     return size;
 }
 
-static int
+static inline int
 is_full_deque(size_t bottom, size_t top)
 {
     gc_assert(size_deque(bottom, top) < GC_DEQUE_SIZE,
@@ -1194,7 +1192,7 @@ is_full_deque(size_t bottom, size_t top)
     return FALSE;
 }
 
-static int
+static inline int
 is_empty_deque(size_t bottom, size_t top)
 {
     if (size_deque(bottom, top) == 0) {
@@ -1203,7 +1201,7 @@ is_empty_deque(size_t bottom, size_t top)
     return FALSE;
 }
 
-static VALUE
+static inline VALUE
 atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 {
 #if GCC_VERSION_SINCE(4,1,2)
@@ -1264,7 +1262,7 @@ pop_bottom(struct deque *deque, VALUE *data)
     deque->bottom = local_bottom;
 
     /* necessary memory barrier. */
-    order_access_memory_barrier();
+    /* order_access_memory_barrier(); */
     *data = deque->datas[local_bottom];
     /* must second read of age after local_bottom decremented.
        The local_bottom decrement is lock on. */
