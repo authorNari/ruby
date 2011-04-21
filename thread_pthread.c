@@ -814,44 +814,6 @@ fetch_worker_group_data(struct work_data *data, rb_gc_par_worker_group_t *wgroup
     data->terminate = wgroup->terminate;
 }
 
-#ifdef HAVE_GETPRIORITY
-
-#ifndef SYS_gettid
-// i386: 224, ia64: 1105, amd64: 186, sparc 143
-#ifdef __ia64__
-#define SYS_gettid 1105
-#elif __i386__
-#define SYS_gettid 224
-#elif __amd64__
-#define SYS_gettid 186
-#elif __sparc__
-#define SYS_gettid 143
-#else
-#error define gettid for the arch
-#endif
-#endif
-
-static pid_t
-gettid(void) {
-    int res;
-    res = syscall(SYS_gettid);
-    if (res == -1) {
-        return getpid();
-    } else {
-        return (pid_t)res;
-    }
-}
-
-static void
-set_worker_priority(void)
-{
-    pid_t pid;
-
-    pid = gettid();
-    setpriority(PRIO_PROCESS, pid, -1);
-}
-#endif
-
 static void *
 gc_par_worker_thread_start(void *worker)
 {
@@ -861,10 +823,6 @@ gc_par_worker_thread_start(void *worker)
     struct work_data data;
 
     gc_par_worker_set_native(w);
-
-#ifdef HAVE_GETPRIORITY
-    set_worker_priority();
-#endif
 
     while (TRUE) {
         data.task = NULL;
