@@ -848,7 +848,7 @@ set_worker_priority(void)
     pid_t pid;
 
     pid = gettid();
-    setpriority(PRIO_PROCESS, pid, 9);
+    setpriority(PRIO_PROCESS, pid, -1);
 }
 #endif
 
