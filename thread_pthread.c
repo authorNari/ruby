@@ -809,7 +809,12 @@ struct work_data {
 static void
 fetch_worker_group_data(struct work_data *data, rb_gc_par_worker_group_t *wgroup)
 {
-    data->task = wgroup->task;
+    if (wgroup->tasks_length > 0 && wgroup->do_index < wgroup->tasks_length) { 
+        data->task = wgroup->tasks[wgroup->do_index++];
+    }
+    else {
+        data->task = NULL;
+    }
     data->seq_number = wgroup->seq_number;
     data->terminate = wgroup->terminate;
 }
@@ -828,7 +833,7 @@ gc_par_worker_thread_start(void *worker)
         data.task = NULL;
         data.seq_number = 0;
         data.terminate = 0;
-
+    
         FGLOCK(owner_lock, {
            fetch_worker_group_data(&data, w->group);
 
@@ -840,7 +845,7 @@ gc_par_worker_thread_start(void *worker)
                    native_mutex_unlock(owner_lock);
                    return NULL;
                }
-               if (data.task != NULL && data.seq_number != prev_seq_number) {
+               if (data.seq_number != prev_seq_number) {
                    thread_debug("catch new task.\n");
                    break;
                }
@@ -852,8 +857,14 @@ gc_par_worker_thread_start(void *worker)
            }
         });
 
-        thread_debug("do task: index(%d)\n", w->index);
-        data.task(w);
+        while(data.task != NULL) {
+            thread_debug("do task: index(%d)\n", w->index);
+            data.task(w);
+
+            FGLOCK(owner_lock, {
+                fetch_worker_group_data(&data, w->group);
+            });
+        }
 
         FGLOCK(owner_lock, {
             thread_debug("finish worker: index(%d)\n", w->index);
@@ -867,13 +878,16 @@ gc_par_worker_thread_start(void *worker)
 }
 
 void
-rb_gc_par_worker_group_run_task(rb_gc_par_worker_group_t *wgroup,
-                                void (*task) (rb_gc_par_worker_t *worker))
+rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *wgroup,
+                                 void (**tasks) (rb_gc_par_worker_t *worker),
+                                 size_t tasks_length)
 {
     FGLOCK(&wgroup->owner_lock, {
-        wgroup->task = task;
+        wgroup->tasks = tasks;
+        wgroup->tasks_length = tasks_length;
         wgroup->seq_number++;
         wgroup->finisheds = 0;
+        wgroup->do_index = 0;
         thread_debug("run task: seq_number(%d)\n", wgroup->seq_number);
     });
 
@@ -887,7 +901,7 @@ rb_gc_par_worker_group_run_task(rb_gc_par_worker_group_t *wgroup,
         }
 
         thread_debug("finished workers: %d\n", wgroup->finisheds);
-        wgroup->task = NULL;
+        wgroup->tasks_length = 0;
     });
 }
 
@@ -895,7 +909,9 @@ void
 rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup)
 {
     FGLOCK(&wgroup->owner_lock, {
-        wgroup->task = NULL;
+        wgroup->tasks = NULL;
+        wgroup->tasks_length = 0;
+        wgroup->do_index = 0;
         wgroup->finisheds = 0;
         wgroup->terminate = TRUE;
         thread_debug("stop task\n");

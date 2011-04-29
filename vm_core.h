@@ -494,7 +494,9 @@ typedef struct rb_gc_par_worker_group_struct {
     pthread_cond_t workers_wait_cond;
     rb_thread_lock_t owner_lock;
     pthread_cond_t owner_wait_cond;
-    void (*task) (struct rb_gc_par_worker_struct *worker);
+    void (**tasks) (struct rb_gc_par_worker_struct *worker);
+    size_t tasks_length;
+    size_t do_index;
     size_t seq_number;
     size_t finisheds;
     int terminate;
@@ -506,6 +508,7 @@ typedef struct rb_gc_par_worker_struct {
     rb_thread_id_t thread_id;
     struct deque *local_deque;
     size_t marked_objects;
+    rb_thread_t *current_thread;
 } rb_gc_par_worker_t;
 #endif
 
@@ -517,7 +520,7 @@ typedef struct rb_gc_par_worker_struct {
 #if defined(HAVE_PTHREAD_H)
 rb_gc_par_worker_t *rb_gc_par_worker_from_native(void);
 rb_gc_par_worker_group_t *rb_gc_par_worker_group_create(size_t, rb_gc_par_worker_t *);
-void rb_gc_par_worker_group_run_task(rb_gc_par_worker_group_t *, void (*) (rb_gc_par_worker_t *));
+void rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *, void (**) (rb_gc_par_worker_t *), size_t);
 void rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup);
 void rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *);
 void rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *);
