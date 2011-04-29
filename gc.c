@@ -274,7 +274,6 @@ enum deque_stat_type {
     OVERFLOW,
     OVERFLOW_MAX,
     GETBACK,
-    AQUIRE_SLOT,
     LAST_STAT_ID
 };
 #endif
@@ -415,8 +414,6 @@ typedef struct rb_objspace {
     } markstack;
     struct {
         struct par_markbuffer buffer;
-        size_t slot_finger_index;
-        RVALUE *slot_finger_end;
         size_t num_workers;
         rb_gc_par_worker_group_t *worker_group;
         struct deque *deques;
@@ -431,6 +428,7 @@ typedef struct rb_objspace {
     struct gc_list *global_list;
     size_t count;
     int gc_stress;
+    rb_gc_par_worker_t serial_worker;
 } rb_objspace_t;
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
@@ -1458,8 +1456,6 @@ init_par_mark(rb_objspace_t *objspace)
     }
     objspace->par_mark.buffer.buffer = (VALUE *)p;
     objspace->par_mark.buffer.size = PAR_MARKBUFFER_SIZE;
-
-    objspace->par_mark.slot_finger_index = -1;
 }
 
 static int
@@ -1767,7 +1763,7 @@ gc_mark_all(rb_objspace_t *objspace)
 	while (p < pend) {
 	    if ((p->as.basic.flags & FL_MARK) &&
 		(p->as.basic.flags != FL_MARK)) {
-		gc_mark_children(objspace, (VALUE)p, 0, NULL);
+		gc_mark_children(objspace, (VALUE)p, 0, &objspace->serial_worker);
 	    }
 	    p++;
 	}
@@ -1786,7 +1782,7 @@ gc_mark_rest(rb_objspace_t *objspace)
     init_mark_stack(objspace);
     while (p != tmp_arry) {
 	p--;
-	gc_mark_children(objspace, *p, 0, NULL);
+	gc_mark_children(objspace, *p, 0, &objspace->serial_worker);
     }
 }
 
@@ -1832,11 +1828,25 @@ mark_locations_array(rb_objspace_t *objspace, register VALUE *x, register long n
     }
 }
 
+static rb_gc_par_worker_t*
+current_gc_worker(void)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+
+    /* serial work? */
+    if (objspace->par_mark.num_workers < 1) {
+        return &objspace->serial_worker;
+    }
+    else {
+        return rb_gc_par_worker_from_native();
+    }
+}
+
 static void
 gc_mark_locations(rb_objspace_t *objspace, VALUE *start, VALUE *end)
 {
     long n;
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
 
     if (end <= start) return;
     n = end - start;
@@ -1898,7 +1908,7 @@ mark_set(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w)
 void
 rb_mark_set(st_table *tbl)
 {
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
     mark_set(&rb_objspace, tbl, 0, w);
 }
 
@@ -1925,7 +1935,7 @@ mark_hash(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker_t *w
 void
 rb_mark_hash(st_table *tbl)
 {
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
     mark_hash(&rb_objspace, tbl, 0, w);
 }
 
@@ -1955,7 +1965,7 @@ mark_method_entry(rb_objspace_t *objspace, const rb_method_entry_t *me, int lev,
 void
 rb_mark_method_entry(const rb_method_entry_t *me)
 {
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
     mark_method_entry(&rb_objspace, me, 0, w);
 }
 
@@ -2028,7 +2038,7 @@ rb_free_const_table(st_table *tbl)
 void
 rb_mark_tbl(st_table *tbl)
 {
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
     mark_tbl(&rb_objspace, tbl, 0, w);
 }
 
@@ -2036,7 +2046,7 @@ void
 rb_gc_mark_maybe(VALUE obj)
 {
     if (is_pointer_to_heap(&rb_objspace, (void *)obj)) {
-        rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+        rb_gc_par_worker_t *w = current_gc_worker();
 	gc_mark(&rb_objspace, obj, 0, w);
     }
 }
@@ -2053,8 +2063,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
     obj->as.basic.flags |= FL_MARK;
-    if (!objspace->par_mark.num_workers)
-        objspace->heap.live_num++;
+    w->marked_objects++;
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
     /* parallel work? */
@@ -2072,14 +2081,11 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
             }
             return;
         }
-        gc_mark_children(objspace, ptr, lev+1, NULL);
+        gc_mark_children(objspace, ptr, lev+1, w);
 #ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
-        /* passed gray object? */
-        if (obj <= objspace->par_mark.slot_finger_end) {
-            push_bottom_with_overflow(objspace, w->local_deque, (VALUE)obj);
-        }
+        push_bottom_with_overflow(objspace, w->local_deque, (VALUE)obj);
     }
 #endif
 }
@@ -2087,7 +2093,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
 void
 rb_gc_mark(VALUE ptr)
 {
-    rb_gc_par_worker_t *w = rb_gc_par_worker_from_native();
+    rb_gc_par_worker_t *w = current_gc_worker();
     gc_mark(&rb_objspace, ptr, 0, w);
 }
 
@@ -2104,8 +2110,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
     obj->as.basic.flags |= FL_MARK;
-    if (!objspace->par_mark.num_workers)
-        objspace->heap.live_num++;
+    w->marked_objects++;
 
   marking:
     if (FL_TEST(obj, FL_EXIVAR)) {
@@ -2834,7 +2839,8 @@ void rb_vm_mark(void *ptr);
 #define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
 
 static void
-mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th)
+mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th,
+                             rb_gc_par_worker_t *w)
 {
     union {
 	rb_jmp_buf j;
@@ -2849,7 +2855,7 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th)
     SET_STACK_END;
     GET_STACK_BOUNDS(stack_start, stack_end, 1);
 
-    mark_locations_array(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), NULL);
+    mark_locations_array(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), w);
 
     rb_gc_mark_locations(stack_start, stack_end);
 #ifdef __ia64
@@ -2857,7 +2863,7 @@ mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th)
 #endif
 #if defined(__mc68000__)
     mark_locations_array(objspace, (VALUE*)((char*)STACK_END + 2),
-			 (STACK_START - STACK_END), NULL);
+			 (STACK_START - STACK_END), w);
 #endif
 }
 
@@ -2885,34 +2891,6 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
 }
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
-static struct sorted_heaps_slot *
-gc_atomic_acquired_slot_finger(rb_objspace_t *objspace)
-{
-    size_t old_index, acquire_index, res;
-
-    old_index = objspace->par_mark.slot_finger_index;
-    acquire_index = old_index + 1;
-
-    while(acquire_index < heaps_used) {
-        res = atomic_compxchg_ptr((VALUE *)&objspace->par_mark.slot_finger_index,
-                                  (VALUE)old_index,
-                                  (VALUE)acquire_index);
-
-        if (res == old_index) {
-            objspace->par_mark.slot_finger_end = objspace->heap.sorted[acquire_index].end;
-            return &objspace->heap.sorted[acquire_index];
-        }
-        else {
-            old_index = res;
-            acquire_index = old_index + 1;
-        }
-    }
-
-    gc_assert((acquire_index-1) < heaps_used,
-              "out of range. acquire_index: %d\n", acquire_index);
-    return NULL;
-}
-
 static void
 gc_do_gray_marks(rb_gc_par_worker_t *worker)
 {
@@ -2921,12 +2899,10 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
     struct deque *deque;
     rb_objspace_t *objspace = &rb_objspace;
 
-    acquired_slot = gc_atomic_acquired_slot_finger(objspace);
-    worker = rb_gc_par_worker_from_native();
+    worker = current_gc_worker();
     deque = worker->local_deque;
 
     while (acquired_slot != NULL) {
-        count_deque_stats(AQUIRE_SLOT);
         p = acquired_slot->start;
         while (p < acquired_slot->end) {
             if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
@@ -2943,7 +2919,6 @@ gc_do_gray_marks(rb_gc_par_worker_t *worker)
             worker->marked_objects++;
             gc_mark_children(objspace, (VALUE)p, 0, worker);
         }
-        acquired_slot = gc_atomic_acquired_slot_finger(objspace);
     }
 
     while (steal(objspace, worker->index, (VALUE *)&p)) {
@@ -2970,22 +2945,20 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th,
             objspace->par_mark.deques[i].age.data = 0;
             objspace->par_mark.worker_group->workers[i].current_thread = th;
         }
-//    rb_gc_par_worker_group_run_task(objspace->par_mark.worker_group,
-//                                     gc_do_gray_marks);
+        rb_gc_par_worker_group_run_tasks(objspace->par_mark.worker_group,
+                                         tasks, tasks_length);
 
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->heap.live_num +=
                 objspace->par_mark.worker_group->workers[i].marked_objects;
             objspace->par_mark.worker_group->workers[i].marked_objects = 0;
         }
-        objspace->par_mark.slot_finger_index = -1;
-        objspace->par_mark.slot_finger_end = NULL;
     }
     else {
-        rb_gc_par_worker_t dummy;
-        dummy.current_thread = th;
+        objspace->serial_worker.current_thread = th;
+        objspace->serial_worker.marked_objects = 0;
         for (i = 0; i < tasks_length; i++) {
-            tasks[i](&dummy);
+            tasks[i](&objspace->serial_worker);
         }
     }
 }
@@ -3006,7 +2979,7 @@ finalizer_table_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    mark_tbl(objspace, finalizer_table, 0, NULL);
+    mark_tbl(objspace, finalizer_table, 0, &objspace->serial_worker);
 }
 
 static void
@@ -3015,7 +2988,7 @@ current_machine_context_mark_task(rb_gc_par_worker_t *worker)
     rb_objspace_t *objspace = &rb_objspace;
     rb_thread_t *th = worker->current_thread;
 
-    mark_current_machine_context(objspace, th);
+    mark_current_machine_context(objspace, th, worker);
 }
 
 static void
@@ -3059,7 +3032,7 @@ class_tbl_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    mark_tbl(objspace, rb_class_tbl, 0, NULL);
+    mark_tbl(objspace, rb_class_tbl, 0, &objspace->serial_worker);
 }
 
 static void
@@ -3074,7 +3047,6 @@ gc_marks(rb_objspace_t *objspace)
 {
     rb_thread_t *th = GET_THREAD();
     void (*tasks[10]) (rb_gc_par_worker_t *worker);
-    size_t i;
     size_t tasks_length = 0;
 
     GC_PROF_MARK_TIMER_START;
@@ -3110,6 +3082,11 @@ gc_marks(rb_objspace_t *objspace)
 	else {
 	    gc_mark_rest(objspace);
 	}
+    }
+
+    /* serial work? */
+    if (objspace->par_mark.num_workers < 1) {
+        objspace->heap.live_num = objspace->serial_worker.marked_objects;
     }
 
     GC_PROF_MARK_TIMER_STOP;
@@ -3642,7 +3619,7 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 	/* XXX: this loop will make no sense */
 	/* because mark will not be removed */
 	finalize_deferred(objspace);
-	mark_tbl(objspace, finalizer_table, 0, NULL);
+	mark_tbl(objspace, finalizer_table, 0, &objspace->serial_worker);
 	st_foreach(finalizer_table, chain_finalized_object,
 		   (st_data_t)&deferred_final_list);
     } while (deferred_final_list);
@@ -4133,7 +4110,7 @@ gc_profile_result(void)
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
             struct deque *deque = &objspace->par_mark.deques[i];
             rb_str_catf(result, "Deque(%d) stats.\n", i+1);
-            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d, aquire_slot: %d\n",
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
                         deque->deque_stats[PUSH],
                         deque->deque_stats[POP_BOTTOM],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
@@ -4141,8 +4118,7 @@ gc_profile_result(void)
                         deque->deque_stats[POP_TOP],
                         deque->deque_stats[OVERFLOW],
                         deque->deque_stats[OVERFLOW_MAX],
-                        deque->deque_stats[GETBACK],
-                        deque->deque_stats[AQUIRE_SLOT]);
+                        deque->deque_stats[GETBACK]);
         }
 #endif
     }
@@ -4204,7 +4180,7 @@ gc_profile_total_time(VALUE self)
 void
 gc_par_print_test(rb_gc_par_worker_t *worker)
 {
-    gc_assert(worker == rb_gc_par_worker_from_native(), "not eq\n");
+    gc_assert(worker == current_gc_worker(), "not eq\n");
     gc_debug("other thread! %p\n", worker);
 }
 
@@ -4478,27 +4454,6 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, &data);
     gc_assert(res == FALSE, "false?\n");
-
-
-    printf("gc_atomic_acquired_slot_finger\n");
-    objspace->par_mark.slot_finger_index = -1;
-    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
-    gc_assert(objspace->par_mark.slot_finger_index == 0, "%d\n",
-              objspace->par_mark.slot_finger_index);
-    gc_assert(res == (VALUE)&objspace->heap.sorted[0], "not eq\n");
-
-    objspace->par_mark.slot_finger_index = heaps_used-2;
-    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
-    gc_assert(objspace->par_mark.slot_finger_index == heaps_used-1, "%d\n",
-              objspace->par_mark.slot_finger_index);
-    gc_assert(res == (VALUE)&objspace->heap.sorted[heaps_used-1], "not eq\n");
-
-    objspace->par_mark.slot_finger_index = heaps_used-1;
-    res = (VALUE)gc_atomic_acquired_slot_finger(objspace);
-    gc_assert(objspace->par_mark.slot_finger_index == heaps_used-1, "%d\n",
-              objspace->par_mark.slot_finger_index);
-    gc_assert(res == 0, "not null\n");
-
 
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
