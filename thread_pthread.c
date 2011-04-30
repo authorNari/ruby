@@ -887,6 +887,7 @@ rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *wgroup,
         wgroup->tasks_length = tasks_length;
         wgroup->seq_number++;
         wgroup->finisheds = 0;
+        wgroup->offer_termination = 0;
         wgroup->do_index = 0;
         thread_debug("run task: seq_number(%d)\n", wgroup->seq_number);
     });
@@ -913,6 +914,7 @@ rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup)
         wgroup->tasks_length = 0;
         wgroup->do_index = 0;
         wgroup->finisheds = 0;
+        wgroup->offer_termination = 0;
         wgroup->terminate = TRUE;
         thread_debug("stop task\n");
     });
@@ -998,6 +1000,74 @@ rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *wgroup)
     native_mutex_unlock(&wgroup->workers_lock);
 }
 
+int
+rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
+{
+    size_t yield_count = 0;
+    size_t spin_count = 0;
+    size_t i;
+    struct timespec ts;
+    struct timeval tvn;
+
+#if GCC_VERSION_SINCE(4,1,2)
+    __sync_add_and_fetch(&wgroup->offer_termination, 1);
+#else
+    FGLOCK(&wgroup->owner_lock, {
+        wgroup->offer_termination++;
+    });
+#endif
+
+    /* 
+       try 3 step
+       1. spin
+       2. thread yield
+       3. sleep
+     */
+    while (TRUE) {
+        if (wgroup->offer_termination >= wgroup->num_workers) {
+            return TRUE;
+        }
+        else {
+            if (yield_count <= 1000) {
+                yield_count++;
+
+                if (spin_count > 10) {
+                    native_thread_yield();
+                    spin_count = 0;
+                }
+                else {
+                    for (i = 0; i < 4096; i++) {
+#ifndef _M_AMD64
+                        asm("pause");
+#endif
+                    }
+                    spin_count++;
+                }
+            }
+            else {
+                yield_count = 0;
+
+                gettimeofday(&tvn, NULL);
+                ts.tv_sec = tvn.tv_sec;
+                ts.tv_nsec = (tvn.tv_usec + 1000) * 1000;
+                FGLOCK(&wgroup->owner_lock, {
+                    pthread_cond_timedwait(&wgroup->workers_wait_cond,
+					   &wgroup->owner_lock, &ts);
+                });
+            }
+            if (!is_deques_empty(wgroup)) {
+#if GCC_VERSION_SINCE(4,1,2)
+                __sync_sub_and_fetch(&wgroup->offer_termination, 1);
+#else
+                FGLOCK(&wgroup->owner_lock, {
+                    wgroup->offer_termination--;
+                });
+#endif
+                return FALSE;
+            }
+        }
+    }
+}
 
 static void
 native_thread_join(pthread_t th)

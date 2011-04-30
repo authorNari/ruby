@@ -1209,6 +1209,21 @@ is_empty_deque(size_t bottom, size_t top)
     return FALSE;
 }
 
+int
+is_deques_empty(rb_gc_par_worker_group_t *wgroup)
+{
+    size_t i;
+    struct deque *deque;
+
+    for (i = 0; i < wgroup->num_workers; i++) {
+        deque = wgroup->workers[i].local_deque;
+        if (!is_empty_deque(deque->bottom, deque->age.fields.top)) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 static inline VALUE
 atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 {
@@ -2944,10 +2959,14 @@ steal_mark_task(rb_gc_par_worker_t *worker)
     RVALUE *p;
     rb_objspace_t *objspace = &rb_objspace;
 
-    while (steal(objspace, worker->index, (VALUE *)&p)) {
-        gc_mark_children(objspace, (VALUE)p, 0, worker);
-        gc_follow_marking_deques(objspace, worker);
-    }
+    do {
+        gc_debug("try steal_mark_task(%d)\n", worker->index);
+
+        while (steal(objspace, worker->index, (VALUE *)&p)) {
+            gc_mark_children(objspace, (VALUE)p, 0, worker);
+            gc_follow_marking_deques(objspace, worker);
+        }
+    } while (!rb_par_steal_task_offer_termination(worker->group));
 }
 
 

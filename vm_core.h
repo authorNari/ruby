@@ -499,6 +499,7 @@ typedef struct rb_gc_par_worker_group_struct {
     size_t do_index;
     size_t seq_number;
     size_t finisheds;
+    size_t offer_termination;
     int terminate;
 } rb_gc_par_worker_group_t;
 
@@ -524,6 +525,8 @@ void rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *, void (**) (rb_
 void rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup);
 void rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *);
 void rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *);
+int rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *);
+int is_deques_empty(rb_gc_par_worker_group_t *);
 #endif
 
 /* iseq.c */
