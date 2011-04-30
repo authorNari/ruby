@@ -2987,7 +2987,7 @@ finalizer_table_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    mark_tbl(objspace, finalizer_table, 0, &objspace->serial_worker);
+    mark_tbl(objspace, finalizer_table, 0, worker);
 
     if (!is_serial_working(objspace))
         gc_follow_marking_deques(objspace, worker);
@@ -3069,7 +3069,7 @@ class_tbl_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
-    mark_tbl(objspace, rb_class_tbl, 0, &objspace->serial_worker);
+    mark_tbl(objspace, rb_class_tbl, 0, worker);
 
     if (!is_serial_working(objspace))
         gc_follow_marking_deques(objspace, worker);
