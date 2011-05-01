@@ -349,16 +349,23 @@ union deque_age {
     } fields;
 };
 
-#define _GC_DEQUE_SIZE (1 << 14)
-static const size_t GC_DEQUE_SIZE  = _GC_DEQUE_SIZE;
-static const size_t GC_DEQUE_SIZE_MASK = _GC_DEQUE_SIZE - 1;
-static const size_t GC_DEQUE_MAX = _GC_DEQUE_SIZE - 2;
+enum deque_data_type {
+    DEQUE_DATA_VALUE,
+    DEQUE_DATA_ARRAY_TASK
+};
+
+#define GC_DEQUE_VALUE_SIZE (1 << 14)
+#define GC_DEQUE_ARRAY_TASK_SIZE (1 << 12)
+#define GC_DEQUE_SIZE_MASK() (deque->size - 1)
+#define GC_DEQUE_MAX() (deque->size - 2)
 struct deque {
-    VALUE datas[_GC_DEQUE_SIZE];
+    void **datas;
     size_t bottom;
     union deque_age age;
+    size_t size;
+    enum deque_data_type type;
 #if DEQUE_STATS
-        size_t deque_stats[LAST_STAT_ID];
+    size_t deque_stats[LAST_STAT_ID];
 #endif
 };
 
@@ -1157,53 +1164,53 @@ assign_heap_slot(rb_objspace_t *objspace)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
 static inline size_t
-deque_increment(size_t index)
+deque_increment(struct deque *deque, size_t index)
 {
-    return (index + 1) & GC_DEQUE_SIZE_MASK;
+    return (index + 1) & GC_DEQUE_SIZE_MASK();
 }
 
 static inline size_t
-deque_decrement(size_t index)
+deque_decrement(struct deque *deque, size_t index)
 {
-    return (index - 1) & GC_DEQUE_SIZE_MASK;
+    return (index - 1) & GC_DEQUE_SIZE_MASK();
 }
 
 static inline size_t
-raw_size_deque(size_t bottom, size_t top)
+raw_size_deque(struct deque *deque, size_t bottom, size_t top)
 {
     size_t size;
 
-    size = (bottom - top) & GC_DEQUE_SIZE_MASK;
+    size = (bottom - top) & GC_DEQUE_SIZE_MASK();
     gc_assert((size != 0 || bottom == top), "size == 0 at bottom == top\n");
     return size;
 }
 
 static inline size_t
-size_deque(size_t bottom, size_t top)
+size_deque(struct deque *deque, size_t bottom, size_t top)
 {
     size_t size;
 
-    size = raw_size_deque(bottom, top);
-    if (size == GC_DEQUE_SIZE_MASK)
+    size = raw_size_deque(deque, bottom, top);
+    if (size == GC_DEQUE_SIZE_MASK())
         return 0;
     return size;
 }
 
 static inline int
-is_full_deque(size_t bottom, size_t top)
+is_full_deque(struct deque *deque, size_t bottom, size_t top)
 {
-    gc_assert(size_deque(bottom, top) < GC_DEQUE_SIZE,
+    gc_assert(size_deque(deque, bottom, top) < deque->size,
               "deque size out of range.\n");
-    if (size_deque(bottom, top) == GC_DEQUE_MAX) {
+    if (size_deque(deque, bottom, top) == GC_DEQUE_MAX()) {
         return TRUE;
     }
     return FALSE;
 }
 
 static inline int
-is_empty_deque(size_t bottom, size_t top)
+is_empty_deque(struct deque *deque, size_t bottom, size_t top)
 {
-    if (size_deque(bottom, top) == 0) {
+    if (size_deque(deque, bottom, top) == 0) {
         return TRUE;
     }
     return FALSE;
@@ -1217,7 +1224,7 @@ is_deques_empty(rb_gc_par_worker_group_t *wgroup)
 
     for (i = 0; i < wgroup->num_workers; i++) {
         deque = wgroup->workers[i].local_deque;
-        if (!is_empty_deque(deque->bottom, deque->age.fields.top)) {
+        if (!is_empty_deque(deque, deque->bottom, deque->age.fields.top)) {
             return FALSE;
         }
     }
@@ -1244,23 +1251,51 @@ order_access_memory_barrier(void)
 #endif
 }
 
+static void
+set_deque_data(struct deque *deque, size_t index, void *data)
+{
+    switch (deque->type) {
+    case DEQUE_DATA_VALUE:
+        ((VALUE *)deque->datas)[index] = (VALUE)data;
+	break;
+    case DEQUE_DATA_ARRAY_TASK:
+        ((VALUE *)deque->datas)[index] = *((VALUE *)data);
+	break;
+    default:
+        gc_assert(FALSE, "bug!\n");
+    }
+}
+
+static void *
+get_deque_data(struct deque *deque, size_t index)
+{
+    switch (deque->type) {
+    case DEQUE_DATA_VALUE:
+        return (void *)((VALUE *)deque->datas)[index];
+    case DEQUE_DATA_ARRAY_TASK:
+        return (void *)(&((VALUE *)deque->datas)[index]);
+    default:
+        gc_assert(FALSE, "bug!\n");
+    }
+}
+
 static int
-push_bottom(struct deque *deque, VALUE data)
+push_bottom(struct deque *deque, void *data)
 {
     size_t local_bottom;
     half_word top;
 
     local_bottom = deque->bottom;
     gc_assert(data != 0, "data is null\n");
-    gc_assert(local_bottom < GC_DEQUE_SIZE,
+    gc_assert(local_bottom < deque->size,
               "local_bottom out of range\n");
     top = deque->age.fields.top;
-    gc_assert(size_deque(local_bottom, top) < GC_DEQUE_SIZE, "size out of range\n");
-    if (!is_full_deque(local_bottom, top)) {
-        gc_assert(size_deque(local_bottom, top) < GC_DEQUE_MAX,
+    gc_assert(size_deque(deque, local_bottom, top) < deque->size, "size out of range\n");
+    if (!is_full_deque(deque, local_bottom, top)) {
+        gc_assert(size_deque(deque, local_bottom, top) < GC_DEQUE_MAX(),
                   "size out of range\n");
-        deque->datas[local_bottom] = data;
-        deque->bottom = deque_increment(local_bottom);
+        set_deque_data(deque, local_bottom, data);
+        deque->bottom = deque_increment(deque, local_bottom);
         count_deque_stats(PUSH);
         return TRUE;
     }
@@ -1268,30 +1303,30 @@ push_bottom(struct deque *deque, VALUE data)
 }
 
 static int
-pop_bottom(struct deque *deque, VALUE *data)
+pop_bottom(struct deque *deque, void **data)
 {
     union deque_age old_age, new_age, res_age;
     size_t local_bottom, size;
 
     old_age = deque->age;
     local_bottom = deque->bottom;
-    gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+    gc_assert(raw_size_deque(deque, local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK(),
               "bottom == (top - 1)\n");
 
-    if (is_empty_deque(local_bottom, old_age.fields.top))
+    if (is_empty_deque(deque, local_bottom, old_age.fields.top))
         return FALSE;
 
-    local_bottom = deque_decrement(local_bottom);
+    local_bottom = deque_decrement(deque, local_bottom);
     deque->bottom = local_bottom;
 
     /* necessary memory barrier. */
     /* order_access_memory_barrier(); */
-    *data = deque->datas[local_bottom];
+    *data = get_deque_data(deque, local_bottom);
     /* must second read of age after local_bottom decremented.
        The local_bottom decrement is lock on. */
     old_age = deque->age;
-    if (size_deque(local_bottom, old_age.fields.top) > 0) {
-        gc_assert(raw_size_deque(local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK,
+    if (size_deque(deque, local_bottom, old_age.fields.top) > 0) {
+        gc_assert(raw_size_deque(deque, local_bottom, old_age.fields.top) != GC_DEQUE_SIZE_MASK(),
                   "bottom == (top - 1)\n");
         count_deque_stats(POP_BOTTOM);
         return TRUE;
@@ -1306,7 +1341,7 @@ pop_bottom(struct deque *deque, VALUE *data)
                                            (VALUE)new_age.data);
         if (res_age.data == old_age.data) {
             /* before pop_top() */
-            gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
+            gc_assert(raw_size_deque(deque, local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK(),
                       "bottom == (top - 1)\n");
             count_deque_stats(POP_BOTTOM_WITH_CAS_WIN);
             return TRUE;
@@ -1315,7 +1350,7 @@ pop_bottom(struct deque *deque, VALUE *data)
     /* after pop_top() */
     count_deque_stats(POP_BOTTOM_WITH_CAS_LOSE);
     deque->age = new_age;
-    gc_assert(raw_size_deque(local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK,
+    gc_assert(raw_size_deque(deque, local_bottom, deque->age.fields.top) != GC_DEQUE_SIZE_MASK(),
               "bottom == (top - 1)\n");
     return FALSE;
 }
@@ -1338,7 +1373,7 @@ move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
         return;
     }
     to = mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE;
-    while(mbuf->index < to && pop_bottom(deque, &tmp)) {
+    while(mbuf->index < to && pop_bottom(deque, (void **)&tmp)) {
         count_cancel_deque_stats(POP_BOTTOM);
         mbuf->buffer[mbuf->index] = tmp;
         mbuf->index++;
@@ -1361,7 +1396,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
     to = mbuf->index - PAR_MARKBUFFER_TRANSEFER_SIZE;
     while(mbuf->index > to && mbuf->index != 0) {
         mbuf->index--;
-        res = push_bottom(deque, mbuf->buffer[mbuf->index]);
+        res = push_bottom(deque, (void *)mbuf->buffer[mbuf->index]);
         count_cancel_deque_stats(PUSH);
         gc_assert(res == TRUE, "must be true\n");
     }
@@ -1370,7 +1405,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
 }
 
 static inline void
-push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE data)
+push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, void *data)
 {
     int res, i;
 
@@ -1386,13 +1421,13 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, VALUE da
 }
 
 static int
-pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *data)
+pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, void **data)
 {
     int i, res;
 
     if(!(res = pop_bottom(deque, data))) {
         /* empty */
-        gc_assert(is_empty_deque(deque->bottom, deque->age.fields.top),
+        gc_assert(is_empty_deque(deque, deque->bottom, deque->age.fields.top),
                   "not empty? %d, %d\n",
                   deque->bottom, deque->age.fields.top);
 
@@ -1407,20 +1442,20 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, VALUE *da
 }
 
 static int
-pop_top(struct deque *deque, VALUE *data)
+pop_top(struct deque *deque, void **data)
 {
     union deque_age old_age, new_age, res_age;
     size_t local_bottom;
 
     old_age = deque->age;
     local_bottom = deque->bottom;
-    if (size_deque(local_bottom, old_age.fields.top) == 0) {
+    if (size_deque(deque, local_bottom, old_age.fields.top) == 0) {
         return FALSE;
     }
 
-    *data = deque->datas[old_age.fields.top];
+    *data = get_deque_data(deque, old_age.fields.top);
     new_age = old_age;
-    new_age.fields.top = deque_increment(new_age.fields.top);
+    new_age.fields.top = deque_increment(deque, new_age.fields.top);
     if (new_age.fields.top == 0) {
         new_age.fields.tag++;
     }
@@ -1429,7 +1464,7 @@ pop_top(struct deque *deque, VALUE *data)
     res_age.data = atomic_compxchg_ptr((VALUE *)&deque->age.data,
                                        (VALUE)old_age.data,
                                        (VALUE)new_age.data);
-    gc_assert(raw_size_deque(local_bottom, new_age.fields.top) != GC_DEQUE_SIZE_MASK,
+    gc_assert(raw_size_deque(deque, local_bottom, new_age.fields.top) != GC_DEQUE_SIZE_MASK(),
               "bottom == (top - 1)\n");
     if (res_age.data == old_age.data) {
         return TRUE;
@@ -1457,6 +1492,16 @@ init_par_mark(rb_objspace_t *objspace)
     }
     objspace->par_mark.deques = (struct deque *)p;
 
+    for (i = 0; i < num_workers; i++) {
+        p = malloc(GC_DEQUE_VALUE_SIZE * sizeof(VALUE));
+        if (!p) {
+            return rb_memerror();
+        }
+        objspace->par_mark.deques[i].datas = p;
+        objspace->par_mark.deques[i].size = GC_DEQUE_VALUE_SIZE;
+        objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
+    }
+
     p = malloc(sizeof(rb_gc_par_worker_t) * num_workers);
     if (!p) {
         return rb_memerror();
@@ -1483,7 +1528,7 @@ init_par_mark(rb_objspace_t *objspace)
 }
 
 static int
-steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
+steal(rb_objspace_t *objspace, size_t deque_index, void **data)
 {
     struct deque *tmp_deque, *res_deque = NULL;
     size_t res_size = 0, tmp_size = 0, i = 0;
@@ -1492,7 +1537,7 @@ steal(rb_objspace_t *objspace, size_t deque_index, VALUE *data)
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             if (i != deque_index) {
                 tmp_deque = &objspace->par_mark.deques[i];
-                tmp_size = size_deque(tmp_deque->bottom, tmp_deque->age.fields.top);
+                tmp_size = size_deque(tmp_deque, tmp_deque->bottom, tmp_deque->age.fields.top);
                 if (tmp_size > res_size) {
                     res_size = tmp_size;
                     res_deque = tmp_deque;
@@ -2108,7 +2153,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
 #ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
-        push_bottom_with_overflow(objspace, w->local_deque, (VALUE)obj);
+        push_bottom_with_overflow(objspace, w->local_deque, (void *)obj);
     }
 #endif
 }
@@ -2948,7 +2993,7 @@ gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
     RVALUE *p;
     struct deque *deque;
 
-    while(pop_bottom_with_get_back(objspace, worker->local_deque, (VALUE *)&p)) {
+    while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
         gc_mark_children(objspace, (VALUE)p, 0, worker);
     }
 }
@@ -2962,7 +3007,7 @@ steal_mark_task(rb_gc_par_worker_t *worker)
     do {
         gc_debug("try steal_mark_task(%d)\n", worker->index);
 
-        while (steal(objspace, worker->index, (VALUE *)&p)) {
+        while (steal(objspace, worker->index, (void **)&p)) {
             gc_mark_children(objspace, (VALUE)p, 0, worker);
             gc_follow_marking_deques(objspace, worker);
         }
@@ -4252,78 +4297,78 @@ rb_gc_test(void)
     objspace->par_mark.deques[3].age.data = 0;
 
     printf("deque size test\n");
-    deque->age.fields.top = GC_DEQUE_SIZE_MASK;
-    deque->age.fields.top = deque_increment(deque->age.fields.top);
+    deque->age.fields.top = GC_DEQUE_SIZE_MASK();
+    deque->age.fields.top = deque_increment(deque, deque->age.fields.top);
     gc_assert(deque->age.fields.top == 0, "%d\n", deque->age.fields.top);
 
     deque->age.fields.top = 0;
-    deque->age.fields.top = deque_decrement(deque->age.fields.top);
-    gc_assert(deque->age.fields.top == GC_DEQUE_SIZE_MASK, "%d %d\n", deque->age.fields.top, GC_DEQUE_SIZE_MASK);
+    deque->age.fields.top = deque_decrement(deque, deque->age.fields.top);
+    gc_assert(deque->age.fields.top == GC_DEQUE_SIZE_MASK(), "%d %d\n", deque->age.fields.top, GC_DEQUE_SIZE_MASK());
 
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == 0, "not eq\n");
+    gc_assert(size_deque(deque, deque->bottom, deque->age.fields.top) == 0, "not eq\n");
 
     deque->age.fields.top = 1;
     deque->bottom = 0;
-    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == 0, "not eq\n");
+    gc_assert(size_deque(deque, deque->bottom, deque->age.fields.top) == 0, "not eq\n");
 
     deque->age.fields.top = 2;
     deque->bottom = 0;
-    gc_assert(size_deque(deque->bottom, deque->age.fields.top) == GC_DEQUE_MAX, "not eq\n");
+    gc_assert(size_deque(deque, deque->bottom, deque->age.fields.top) == GC_DEQUE_MAX(), "not eq\n");
 
 
     printf("is_full_deque test\n");
     deque->age.fields.top = 0;
-    deque->bottom = GC_DEQUE_MAX;
-    gc_assert(is_full_deque(deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
+    deque->bottom = GC_DEQUE_MAX();
+    gc_assert(is_full_deque(deque, deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
 
     deque->age.fields.top = 1;
     deque->bottom = 0;
-    gc_assert(!is_full_deque(deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
+    gc_assert(!is_full_deque(deque, deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
 
     deque->age.fields.top = 0;
-    deque->bottom = GC_DEQUE_MAX - 1;
-    gc_assert(!is_full_deque(deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque->bottom, deque->age.fields.top));
+    deque->bottom = GC_DEQUE_MAX() - 1;
+    gc_assert(!is_full_deque(deque, deque->bottom, deque->age.fields.top),
+              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
 
 
     printf("push_bottom test\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    res = push_bottom(deque, 1);
+    res = push_bottom(deque, (void *)1);
     gc_assert(res, "false?");
-    gc_assert(deque->datas[0] == 1, "datas[0] %p\n", (void *)deque->datas[0]);
-    gc_assert(deque->bottom == 1, "bottom %d\n", deque->bottom);
+    gc_assert((int)deque->datas[0] == 1, "datas[0] %p\n", (void *)deque->datas[0]);
+    gc_assert((int)deque->bottom == 1, "bottom %d\n", deque->bottom);
 
-    res = push_bottom(deque, 2);
+    res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
-    gc_assert(deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
+    gc_assert((int)deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
 
-    res = push_bottom(deque, 2);
+    res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
-    gc_assert(deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
+    gc_assert((int)deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
 
     deque->age.fields.top = 0;
-    deque->bottom = GC_DEQUE_MAX;
-    res = push_bottom(deque, 2);
+    deque->bottom = GC_DEQUE_MAX();
+    res = push_bottom(deque, (void *)2);
     gc_assert(!res, "true?");
 
     deque->age.fields.top = 0;
-    deque->bottom = GC_DEQUE_SIZE_MASK;
-    res = push_bottom(deque, 2);
+    deque->bottom = GC_DEQUE_SIZE_MASK();
+    res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
 
     deque->age.fields.top = 5;
     deque->bottom = 2;
-    res = push_bottom(deque, 2);
+    res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
     gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
-    gc_assert(deque->datas[2] == 2, "datas[3] %p\n", (void *)deque->datas[2]);
+    gc_assert((int)deque->datas[2] == 2, "datas[3] %p\n", (void *)deque->datas[2]);
 
-    res = push_bottom(deque, 2);
+    res = push_bottom(deque, (void *)2);
     gc_assert(!res, "true?");
     gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
 
@@ -4331,11 +4376,11 @@ rb_gc_test(void)
     printf("is_empty\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    res = is_empty_deque(deque->bottom, deque->age.fields.top);
+    res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
     gc_assert(res == TRUE, "res %d\n", res);
 
     deque->bottom = 1;
-    res = is_empty_deque(deque->bottom, deque->age.fields.top);
+    res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
     gc_assert(res == FALSE, "res %d\n", res);
 
     printf("order_access_memory_barrier\n");
@@ -4344,13 +4389,13 @@ rb_gc_test(void)
     printf("pop_bottom test\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    push_bottom(deque, 1);
-    push_bottom(deque, 2);
-    res = pop_bottom(deque, &data);
+    push_bottom(deque, (void *)1);
+    push_bottom(deque, (void *)2);
+    res = pop_bottom(deque, (void **)&data);
     gc_assert(res == TRUE, "fail\n");
     gc_assert(data == 2, "data %d\n", (int)data);
 
-    res = pop_bottom(deque, &data);
+    res = pop_bottom(deque, (void **)&data);
     /* pop_bottom win */
     gc_assert(res == TRUE, "fail\n");
     gc_assert(data == 1, "data %d\n", (int)data);
@@ -4359,42 +4404,42 @@ rb_gc_test(void)
     /* pop_bottom lose
     gc_assert(res == FALSE, "fail\n");
     */
-    res = pop_bottom(deque, &data);
+    res = pop_bottom(deque, (void **)&data);
     data = 2;
     gc_assert(res == FALSE, "fail\n");
     gc_assert(data == 2, "data %d\n", (int)data);
 
     deque->age.fields.top = 5;
     deque->bottom = 2;
-    push_bottom(deque, 3);
-    res = pop_bottom(deque, &data);
+    push_bottom(deque, (void *)3);
+    res = pop_bottom(deque, (void **)&data);
     gc_assert(res == TRUE, "fail\n");
     gc_assert(data == 3, "data %d\n", (int)data);
     gc_assert(deque->bottom == 2, "bottom %d\n", deque->bottom);
-    pop_bottom(deque, &data);
-    pop_bottom(deque, &data);
-    pop_bottom(deque, &data);
-    gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK, "bottom %d\n", deque->bottom);
+    pop_bottom(deque, (void **)&data);
+    pop_bottom(deque, (void **)&data);
+    pop_bottom(deque, (void **)&data);
+    gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK(), "bottom %d\n", deque->bottom);
 
 
     printf("pop_top test\n");
     deque->age.fields.top = 0;
     deque->age.fields.tag = 0;
     deque->bottom = 0;
-    push_bottom(deque, 1);
-    res = pop_top(deque, &data);
+    push_bottom(deque, (void *)1);
+    res = pop_top(deque, (void **)&data);
     gc_assert(res == TRUE, "fail\n");
     gc_assert(data == 1, "data %d\n", (int)data);
     gc_assert(deque->age.fields.top == 1, "top %d\n", deque->age.fields.top);
     gc_assert(deque->age.fields.tag == 0, "tag %d\n", deque->age.fields.tag);
 
-    res = pop_top(deque, &data);
+    res = pop_top(deque, (void **)&data);
     gc_assert(res == FALSE, "fail\n");
     gc_assert(deque->age.fields.top == 1, "top %d\n", deque->age.fields.top);
 
-    deque->age.fields.top = GC_DEQUE_SIZE_MASK;
+    deque->age.fields.top = GC_DEQUE_SIZE_MASK();
     deque->bottom = 2;
-    res = pop_top(deque, &data);
+    res = pop_top(deque, (void **)&data);
     gc_assert(res == TRUE, "fail\n");
     gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
@@ -4404,40 +4449,40 @@ rb_gc_test(void)
     objspace->par_mark.num_workers = 4;
     deque->bottom = 0;
     deque->age.data = 0;
-    push_bottom(&objspace->par_mark.deques[1], 11);
-    push_bottom(&objspace->par_mark.deques[1], 12);
-    push_bottom(&objspace->par_mark.deques[1], 13);
-    push_bottom(&objspace->par_mark.deques[2], 21);
-    push_bottom(&objspace->par_mark.deques[2], 22);
-    push_bottom(&objspace->par_mark.deques[3], 31);
-    res = steal(objspace, 0, &data);
+    push_bottom(&objspace->par_mark.deques[1], (void *)11);
+    push_bottom(&objspace->par_mark.deques[1], (void *)12);
+    push_bottom(&objspace->par_mark.deques[1], (void *)13);
+    push_bottom(&objspace->par_mark.deques[2], (void *)21);
+    push_bottom(&objspace->par_mark.deques[2], (void *)22);
+    push_bottom(&objspace->par_mark.deques[3], (void *)31);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, 1, &data);
+    res = steal(objspace, 1, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 21, "data: %d\n", (int)data);
-    res = steal(objspace, 2, &data);
+    res = steal(objspace, 2, (void **)&data);
     gc_assert(data == 12, "data: %d\n", (int)data);
-    res = steal(objspace, 0, &data);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(data == 13, "data: %d\n", (int)data);
-    res = steal(objspace, 0, &data);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(data == 22, "data: %d\n", (int)data);
-    res = steal(objspace, 0, &data);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(data == 31, "data: %d\n", (int)data);
-    res = steal(objspace, 0, &data);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
-    push_bottom(&objspace->par_mark.deques[0], 1);
+    push_bottom(&objspace->par_mark.deques[0], (void *)1);
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 2;
-    res = steal(objspace, 1, &data);
+    res = steal(objspace, 1, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 1, "data: %d\n", (int)data);
-    push_bottom(&objspace->par_mark.deques[1], 11);
-    res = steal(objspace, 0, &data);
+    push_bottom(&objspace->par_mark.deques[1], (void *)11);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, 0, &data);
+    res = steal(objspace, 0, (void **)&data);
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
@@ -4445,13 +4490,13 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = 0;
     for(i = 1;i < 11; i++) {
-        push_bottom(deque, i);
+        push_bottom(deque, (void *)i);
     }
     move_dates_to_mark_buffer(objspace, deque);
     gc_assert(deque->bottom == 0, "bottom: (%d)\n", deque->bottom);
     /* overflow */
     mbuf->index = PAR_MARKBUFFER_SIZE;
-    push_bottom(deque, 1);
+    push_bottom(deque, (void *)1);
     move_dates_to_mark_buffer(objspace, deque);
     gc_assert(mbuf->overflowed == TRUE, "index: (%d)\n", mbuf->index);
     gc_assert(deque->bottom == 1, "bottom: (%d)\n", deque->bottom);
@@ -4464,8 +4509,8 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = get_back_dates_from_mark_buffer(objspace, deque);
     gc_assert(res == TRUE, "false?\n");
-    gc_assert(deque->datas[0] == 1, "(%d)\n", (int)deque->datas[0]);
-    gc_assert(deque->datas[9] == 10, "(%d)\n", (int)deque->datas[9]);
+    gc_assert((int)deque->datas[0] == 1, "(%d)\n", (int)deque->datas[0]);
+    gc_assert((int)deque->datas[9] == 10, "(%d)\n", (int)deque->datas[9]);
     res = get_back_dates_from_mark_buffer(objspace, deque);
     gc_assert(res == FALSE, "true?\n");
 
@@ -4473,34 +4518,34 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = 0;
     mbuf->index = 0;
-    push_bottom_with_overflow(objspace, deque, 1);
-    gc_assert(deque->datas[0] == 1, "eq\n");
+    push_bottom_with_overflow(objspace, deque, (void *)1);
+    gc_assert((int)deque->datas[0] == 1, "eq\n");
 
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    for (i = 0; i < GC_DEQUE_MAX; i++) {
-        push_bottom(deque, i+1);
+    for (i = 0; i < GC_DEQUE_MAX(); i++) {
+        push_bottom(deque, (void *)(i+1));
     }
-    push_bottom_with_overflow(objspace, deque, 2);
-    gc_assert(deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_TRANSEFER_SIZE] == 2,
-              "data %d\n", (int)deque->datas[GC_DEQUE_MAX - PAR_MARKBUFFER_TRANSEFER_SIZE]);
+    push_bottom_with_overflow(objspace, deque, (void *)2);
+    gc_assert((int)deque->datas[GC_DEQUE_MAX() - PAR_MARKBUFFER_TRANSEFER_SIZE] == 2,
+              "data %d\n", (int)deque->datas[GC_DEQUE_MAX() - PAR_MARKBUFFER_TRANSEFER_SIZE]);
     gc_assert(mbuf->index != 0, "not zero\n");
-    gc_assert(mbuf->buffer[0] == GC_DEQUE_MAX, "%d\n", (int)mbuf->buffer[0]);
+    gc_assert(mbuf->buffer[0] == GC_DEQUE_MAX(), "%d\n", (int)mbuf->buffer[0]);
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
 
     printf("pop_bottom_with_get_back\n");
-    push_bottom(deque, 1);
-    res = pop_bottom_with_get_back(objspace, deque, &data);
+    push_bottom(deque, (void *)1);
+    res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == TRUE, "false?\n");
     gc_assert(data == 1, "%d\n", (int)data);
-    res = pop_bottom_with_get_back(objspace, deque, &data);
+    res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == TRUE, "false?\n");
-    gc_assert(data == GC_DEQUE_MAX, "%d\n", (int)data);
+    gc_assert(data == GC_DEQUE_MAX(), "%d\n", (int)data);
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    res = pop_bottom_with_get_back(objspace, deque, &data);
+    res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == FALSE, "false?\n");
 
     printf("worker\n");
