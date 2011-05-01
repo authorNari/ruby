@@ -351,13 +351,20 @@ union deque_age {
 
 enum deque_data_type {
     DEQUE_DATA_VALUE,
-    DEQUE_DATA_ARRAY_TASK
+    DEQUE_DATA_ARRAY_CONTINUE
+};
+
+struct array_continue {
+    RVALUE *obj;
+    size_t index;
 };
 
 #define GC_DEQUE_VALUE_SIZE (1 << 14)
-#define GC_DEQUE_ARRAY_TASK_SIZE (1 << 12)
+#define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 12)
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
 #define GC_DEQUE_MAX() (deque->size - 2)
+#define GC_DEQUE_ARRAY_CONTINUE_STRIDE 512
+
 struct deque {
     void **datas;
     size_t bottom;
@@ -423,6 +430,7 @@ typedef struct rb_objspace {
         size_t num_workers;
         rb_gc_par_worker_group_t *worker_group;
         struct deque *deques;
+        struct deque *array_continue_deques;
     } par_mark;
     struct {
 	int run;
@@ -1258,8 +1266,8 @@ set_deque_data(struct deque *deque, size_t index, void *data)
     case DEQUE_DATA_VALUE:
         ((VALUE *)deque->datas)[index] = (VALUE)data;
 	break;
-    case DEQUE_DATA_ARRAY_TASK:
-        ((VALUE *)deque->datas)[index] = *((VALUE *)data);
+    case DEQUE_DATA_ARRAY_CONTINUE:
+        ((struct array_continue *)deque->datas)[index] = *((struct array_continue *)data);
 	break;
     default:
         gc_assert(FALSE, "bug!\n");
@@ -1272,8 +1280,8 @@ get_deque_data(struct deque *deque, size_t index)
     switch (deque->type) {
     case DEQUE_DATA_VALUE:
         return (void *)((VALUE *)deque->datas)[index];
-    case DEQUE_DATA_ARRAY_TASK:
-        return (void *)(&((VALUE *)deque->datas)[index]);
+    case DEQUE_DATA_ARRAY_CONTINUE:
+        return (void *)(&((struct array_continue *)deque->datas)[index]);
     default:
         gc_assert(FALSE, "bug!\n");
     }
@@ -1502,6 +1510,22 @@ init_par_mark(rb_objspace_t *objspace)
         objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
     }
 
+    p = malloc(sizeof(struct deque) * num_workers);
+    if (!p) {
+        return rb_memerror();
+    }
+    objspace->par_mark.array_continue_deques = (struct deque *)p;
+
+    for (i = 0; i < num_workers; i++) {
+        p = malloc(GC_DEQUE_ARRAY_CONTINUE_SIZE * sizeof(struct array_continue));
+        if (!p) {
+            return rb_memerror();
+        }
+        objspace->par_mark.array_continue_deques[i].datas = p;
+        objspace->par_mark.array_continue_deques[i].size = GC_DEQUE_ARRAY_CONTINUE_SIZE;
+        objspace->par_mark.array_continue_deques[i].type = DEQUE_DATA_ARRAY_CONTINUE;
+    }
+
     p = malloc(sizeof(rb_gc_par_worker_t) * num_workers);
     if (!p) {
         return rb_memerror();
@@ -1510,6 +1534,7 @@ init_par_mark(rb_objspace_t *objspace)
     workers = (rb_gc_par_worker_t *)p;
     for (i = 0; i < num_workers; i++) {
         workers[i].local_deque = &objspace->par_mark.deques[i];
+        workers[i].local_array_conts = &objspace->par_mark.array_continue_deques[i];
         workers[i].index = i;
     }
 
@@ -1528,7 +1553,8 @@ init_par_mark(rb_objspace_t *objspace)
 }
 
 static int
-steal(rb_objspace_t *objspace, size_t deque_index, void **data)
+steal(rb_objspace_t *objspace, struct deque *deques,
+      size_t deque_index, void **data)
 {
     struct deque *tmp_deque, *res_deque = NULL;
     size_t res_size = 0, tmp_size = 0, i = 0;
@@ -1536,7 +1562,7 @@ steal(rb_objspace_t *objspace, size_t deque_index, void **data)
     if (objspace->par_mark.num_workers > 2) {
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             if (i != deque_index) {
-                tmp_deque = &objspace->par_mark.deques[i];
+                tmp_deque = &deques[i];
                 tmp_size = size_deque(tmp_deque, tmp_deque->bottom, tmp_deque->age.fields.top);
                 if (tmp_size > res_size) {
                     res_size = tmp_size;
@@ -1553,7 +1579,7 @@ steal(rb_objspace_t *objspace, size_t deque_index, void **data)
     }
     else if (objspace->par_mark.num_workers == 2) {
         i = (deque_index + 1) % 2;
-        return pop_top(&objspace->par_mark.deques[i], data);
+        return pop_top(&deques[i], data);
     }
     else {
         gc_assert(FALSE, "should not call this function.\n");
@@ -1889,10 +1915,10 @@ mark_locations_array(rb_objspace_t *objspace, VALUE *x, register long n, rb_gc_p
     while (n--) {
         v = *x;
         VALGRIND_MAKE_MEM_DEFINED(&v, sizeof(v));
-	if (is_pointer_to_heap(objspace, (void *)v)) {
-	    gc_mark(objspace, v, 0, w);
-	}
-	x++;
+        if (is_pointer_to_heap(objspace, (void *)v)) {
+            gc_mark(objspace, v, 0, w);
+        }
+        x++;
     }
 }
 
@@ -2087,6 +2113,41 @@ mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker
     arg.lev = lev;
     arg.worker = w;
     st_foreach(tbl, mark_const_entry_i, (st_data_t)&arg);
+}
+
+static void
+push_array_continue(rb_objspace_t *objspace, struct deque *array_conts,
+                    RVALUE *obj, size_t index)
+{
+    struct array_continue ac;
+
+    ac.obj = obj;
+    ac.index = index;
+    gc_assert(ac.index <= (size_t)RARRAY_LEN(obj), "too big.\n");
+    push_bottom_with_overflow(objspace, array_conts, (void *)&ac);
+}
+
+static void
+par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
+                      RVALUE *obj, size_t index)
+{
+    size_t end;
+    size_t len = RARRAY_LEN(obj);
+    VALUE *ptr = RARRAY_PTR(obj);
+
+    if ((index + GC_DEQUE_ARRAY_CONTINUE_STRIDE) >= len) {
+        end = len;
+    }
+    else {
+        end = index + GC_DEQUE_ARRAY_CONTINUE_STRIDE;
+    }
+
+    for(; index < end; index++) {
+        gc_mark(objspace, *ptr++, 0, worker);
+    }
+    if (end < len) {
+        push_array_continue(objspace, worker->local_array_conts, obj, index);
+    }
 }
 
 static int
@@ -2340,11 +2401,16 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t
 	    goto again;
 	}
 	else {
-	    long i, len = RARRAY_LEN(obj);
-	    VALUE *ptr = RARRAY_PTR(obj);
-	    for (i=0; i < len; i++) {
-		gc_mark(objspace, *ptr++, lev, w);
-	    }
+            if (is_serial_working(objspace)) {
+                long i, len = RARRAY_LEN(obj);
+                VALUE *ptr = RARRAY_PTR(obj);
+                for (i=0; i < len; i++) {
+                    gc_mark(objspace, *ptr++, lev, w);
+                }
+            }
+            else {
+                par_mark_array_object(objspace, w, obj, 0);
+            }
 	}
 	break;
 
@@ -3002,12 +3068,19 @@ static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
     RVALUE *p;
+    struct array_continue ac;
     rb_objspace_t *objspace = &rb_objspace;
 
     do {
         gc_debug("try steal_mark_task(%d)\n", worker->index);
 
-        while (steal(objspace, worker->index, (void **)&p)) {
+        while (steal(objspace, objspace->par_mark.array_continue_deques,
+                     worker->index, (void **)&ac)) {
+            par_mark_array_object(objspace, worker, ac.obj, ac.index);
+        }
+
+        while (steal(objspace, objspace->par_mark.deques,
+                     worker->index, (void **)&p)) {
             gc_mark_children(objspace, (VALUE)p, 0, worker);
             gc_follow_marking_deques(objspace, worker);
         }
@@ -4284,6 +4357,7 @@ rb_gc_test(void)
     struct deque *deque = &objspace->par_mark.deques[0];
     size_t res, tmp_num_workers, i;
     VALUE data;
+    struct array_continue ac;
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     rb_gc_par_worker_t *worker;
     rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
@@ -4455,34 +4529,34 @@ rb_gc_test(void)
     push_bottom(&objspace->par_mark.deques[2], (void *)21);
     push_bottom(&objspace->par_mark.deques[2], (void *)22);
     push_bottom(&objspace->par_mark.deques[3], (void *)31);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, 1, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 21, "data: %d\n", (int)data);
-    res = steal(objspace, 2, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 2, (void **)&data);
     gc_assert(data == 12, "data: %d\n", (int)data);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 13, "data: %d\n", (int)data);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 22, "data: %d\n", (int)data);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 31, "data: %d\n", (int)data);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
     push_bottom(&objspace->par_mark.deques[0], (void *)1);
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 2;
-    res = steal(objspace, 1, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", res);
     gc_assert(data == 1, "data: %d\n", (int)data);
     push_bottom(&objspace->par_mark.deques[1], (void *)11);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == 0, "res: %d\n", res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
@@ -4534,7 +4608,6 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
-
     printf("pop_bottom_with_get_back\n");
     push_bottom(deque, (void *)1);
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
@@ -4547,6 +4620,22 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == FALSE, "false?\n");
+
+
+    printf("par_mark_array_object\n");
+    data = rb_ary_new2(GC_DEQUE_ARRAY_CONTINUE_STRIDE*2);
+    rb_ary_store(data, GC_DEQUE_ARRAY_CONTINUE_STRIDE*2-1, Qtrue);
+    par_mark_array_object(objspace, &workers[0], (RVALUE *)data, 0);
+    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[0];
+    gc_assert((VALUE)ac.obj == data, "not eq\n");
+    gc_assert(ac.index == 512, "not eq\n");
+    par_mark_array_object(objspace, &workers[0], (RVALUE *)data, 512);
+    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[1];
+    gc_assert((VALUE)ac.obj != data, "not eq\n");
+    par_mark_array_object(objspace, &workers[0], (RVALUE *)data, 510);
+    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[1];
+    gc_assert((VALUE)ac.obj == data, "not eq\n");
+    gc_assert(ac.index == 1022, "not eq\n");
 
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
