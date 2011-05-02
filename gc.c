@@ -1260,7 +1260,7 @@ order_access_memory_barrier(void)
 }
 
 static void
-set_deque_data(struct deque *deque, size_t index, void *data)
+deque_datas_store(struct deque *deque, size_t index, void *data)
 {
     switch (deque->type) {
     case DEQUE_DATA_VALUE:
@@ -1275,7 +1275,7 @@ set_deque_data(struct deque *deque, size_t index, void *data)
 }
 
 static void *
-get_deque_data(struct deque *deque, size_t index)
+deque_datas_entry(struct deque *deque, size_t index)
 {
     switch (deque->type) {
     case DEQUE_DATA_VALUE:
@@ -1302,7 +1302,7 @@ push_bottom(struct deque *deque, void *data)
     if (!is_full_deque(deque, local_bottom, top)) {
         gc_assert(size_deque(deque, local_bottom, top) < GC_DEQUE_MAX(),
                   "size out of range\n");
-        set_deque_data(deque, local_bottom, data);
+        deque_datas_store(deque, local_bottom, data);
         deque->bottom = deque_increment(deque, local_bottom);
         count_deque_stats(PUSH);
         return TRUE;
@@ -1329,7 +1329,7 @@ pop_bottom(struct deque *deque, void **data)
 
     /* necessary memory barrier. */
     /* order_access_memory_barrier(); */
-    *data = get_deque_data(deque, local_bottom);
+    *data = deque_datas_entry(deque, local_bottom);
     /* must second read of age after local_bottom decremented.
        The local_bottom decrement is lock on. */
     old_age = deque->age;
@@ -1461,7 +1461,7 @@ pop_top(struct deque *deque, void **data)
         return FALSE;
     }
 
-    *data = get_deque_data(deque, old_age.fields.top);
+    *data = deque_datas_entry(deque, old_age.fields.top);
     new_age = old_age;
     new_age.fields.top = deque_increment(deque, new_age.fields.top);
     if (new_age.fields.top == 0) {
