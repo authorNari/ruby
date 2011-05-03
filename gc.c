@@ -354,10 +354,10 @@ enum deque_data_type {
     DEQUE_DATA_ARRAY_CONTINUE
 };
 
-struct array_continue {
+typedef struct array_continue {
     RVALUE *obj;
     size_t index;
-};
+} array_continue_t;
 
 #define GC_DEQUE_VALUE_SIZE (1 << 14)
 #define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 12)
@@ -365,7 +365,7 @@ struct array_continue {
 #define GC_DEQUE_MAX() (deque->size - 2)
 #define GC_DEQUE_ARRAY_CONTINUE_STRIDE 512
 
-struct deque {
+typedef struct deque {
     void **datas;
     size_t bottom;
     union deque_age age;
@@ -374,7 +374,7 @@ struct deque {
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif
-};
+} deque_t;
 
 /* 8 * 1028 * 1028 */
 #define PAR_MARKBUFFER_SIZE 8454272
@@ -429,8 +429,8 @@ typedef struct rb_objspace {
         struct par_markbuffer buffer;
         size_t num_workers;
         rb_gc_par_worker_group_t *worker_group;
-        struct deque *deques;
-        struct deque *array_continue_deques;
+        deque_t *deques;
+        deque_t *array_continue_deques;
     } par_mark;
     struct {
 	int run;
@@ -1172,19 +1172,19 @@ assign_heap_slot(rb_objspace_t *objspace)
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
 static inline size_t
-deque_increment(struct deque *deque, size_t index)
+deque_increment(deque_t *deque, size_t index)
 {
     return (index + 1) & GC_DEQUE_SIZE_MASK();
 }
 
 static inline size_t
-deque_decrement(struct deque *deque, size_t index)
+deque_decrement(deque_t *deque, size_t index)
 {
     return (index - 1) & GC_DEQUE_SIZE_MASK();
 }
 
 static inline size_t
-raw_size_deque(struct deque *deque, size_t bottom, size_t top)
+raw_size_deque(deque_t *deque, size_t bottom, size_t top)
 {
     size_t size;
 
@@ -1194,7 +1194,7 @@ raw_size_deque(struct deque *deque, size_t bottom, size_t top)
 }
 
 static inline size_t
-size_deque(struct deque *deque, size_t bottom, size_t top)
+size_deque(deque_t *deque, size_t bottom, size_t top)
 {
     size_t size;
 
@@ -1205,7 +1205,7 @@ size_deque(struct deque *deque, size_t bottom, size_t top)
 }
 
 static inline int
-is_full_deque(struct deque *deque, size_t bottom, size_t top)
+is_full_deque(deque_t *deque, size_t bottom, size_t top)
 {
     gc_assert(size_deque(deque, bottom, top) < deque->size,
               "deque size out of range.\n");
@@ -1216,7 +1216,7 @@ is_full_deque(struct deque *deque, size_t bottom, size_t top)
 }
 
 static inline int
-is_empty_deque(struct deque *deque, size_t bottom, size_t top)
+is_empty_deque(deque_t *deque, size_t bottom, size_t top)
 {
     if (size_deque(deque, bottom, top) == 0) {
         return TRUE;
@@ -1228,7 +1228,7 @@ int
 is_deques_empty(rb_gc_par_worker_group_t *wgroup)
 {
     size_t i;
-    struct deque *deque;
+    deque_t *deque;
 
     for (i = 0; i < wgroup->num_workers; i++) {
         deque = wgroup->workers[i].local_deque;
@@ -1260,14 +1260,14 @@ order_access_memory_barrier(void)
 }
 
 static void
-deque_datas_store(struct deque *deque, size_t index, void *data)
+deque_datas_store(deque_t *deque, size_t index, void *data)
 {
     switch (deque->type) {
     case DEQUE_DATA_VALUE:
         ((VALUE *)deque->datas)[index] = (VALUE)data;
 	break;
     case DEQUE_DATA_ARRAY_CONTINUE:
-        ((struct array_continue *)deque->datas)[index] = *((struct array_continue *)data);
+        ((array_continue_t *)deque->datas)[index] = *((array_continue_t *)data);
 	break;
     default:
         gc_assert(FALSE, "bug!\n");
@@ -1275,20 +1275,20 @@ deque_datas_store(struct deque *deque, size_t index, void *data)
 }
 
 static void *
-deque_datas_entry(struct deque *deque, size_t index)
+deque_datas_entry(deque_t *deque, size_t index)
 {
     switch (deque->type) {
     case DEQUE_DATA_VALUE:
         return (void *)((VALUE *)deque->datas)[index];
     case DEQUE_DATA_ARRAY_CONTINUE:
-        return (void *)(&((struct array_continue *)deque->datas)[index]);
+        return (void *)(&((array_continue_t *)deque->datas)[index]);
     default:
         gc_assert(FALSE, "bug!\n");
     }
 }
 
 static int
-push_bottom(struct deque *deque, void *data)
+push_bottom(deque_t *deque, void *data)
 {
     size_t local_bottom;
     half_word top;
@@ -1311,7 +1311,7 @@ push_bottom(struct deque *deque, void *data)
 }
 
 static int
-pop_bottom(struct deque *deque, void **data)
+pop_bottom(deque_t *deque, void **data)
 {
     union deque_age old_age, new_age, res_age;
     size_t local_bottom, size;
@@ -1366,7 +1366,7 @@ pop_bottom(struct deque *deque, void **data)
 #define PAR_MARKBUFFER_TRANSEFER_SIZE 10
 
 static void
-move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
+move_dates_to_mark_buffer(rb_objspace_t *objspace, deque_t *deque)
 {
     VALUE tmp;
     size_t to;
@@ -1390,7 +1390,7 @@ move_dates_to_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
 }
 
 static int
-get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
+get_back_dates_from_mark_buffer(rb_objspace_t *objspace, deque_t *deque)
 {
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     size_t to;
@@ -1413,7 +1413,7 @@ get_back_dates_from_mark_buffer(rb_objspace_t *objspace, struct deque *deque)
 }
 
 static inline void
-push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, void *data)
+push_bottom_with_overflow(rb_objspace_t *objspace, deque_t *deque, void *data)
 {
     int res, i;
 
@@ -1429,7 +1429,7 @@ push_bottom_with_overflow(rb_objspace_t *objspace, struct deque *deque, void *da
 }
 
 static int
-pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, void **data)
+pop_bottom_with_get_back(rb_objspace_t *objspace, deque_t *deque, void **data)
 {
     int i, res;
 
@@ -1450,7 +1450,7 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, struct deque *deque, void **da
 }
 
 static int
-pop_top(struct deque *deque, void **data)
+pop_top(deque_t *deque, void **data)
 {
     union deque_age old_age, new_age, res_age;
     size_t local_bottom;
@@ -1494,11 +1494,11 @@ init_par_mark(rb_objspace_t *objspace)
         return;
     }
 
-    p = malloc(sizeof(struct deque) * num_workers);
+    p = malloc(sizeof(deque_t) * num_workers);
     if (!p) {
         return rb_memerror();
     }
-    objspace->par_mark.deques = (struct deque *)p;
+    objspace->par_mark.deques = (deque_t *)p;
 
     for (i = 0; i < num_workers; i++) {
         p = malloc(GC_DEQUE_VALUE_SIZE * sizeof(VALUE));
@@ -1510,14 +1510,14 @@ init_par_mark(rb_objspace_t *objspace)
         objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
     }
 
-    p = malloc(sizeof(struct deque) * num_workers);
+    p = malloc(sizeof(deque_t) * num_workers);
     if (!p) {
         return rb_memerror();
     }
-    objspace->par_mark.array_continue_deques = (struct deque *)p;
+    objspace->par_mark.array_continue_deques = (deque_t *)p;
 
     for (i = 0; i < num_workers; i++) {
-        p = malloc(GC_DEQUE_ARRAY_CONTINUE_SIZE * sizeof(struct array_continue));
+        p = malloc(GC_DEQUE_ARRAY_CONTINUE_SIZE * sizeof(array_continue_t));
         if (!p) {
             return rb_memerror();
         }
@@ -1553,10 +1553,10 @@ init_par_mark(rb_objspace_t *objspace)
 }
 
 static int
-steal(rb_objspace_t *objspace, struct deque *deques,
+steal(rb_objspace_t *objspace, deque_t *deques,
       size_t deque_index, void **data)
 {
-    struct deque *tmp_deque, *res_deque = NULL;
+    deque_t *tmp_deque, *res_deque = NULL;
     size_t res_size = 0, tmp_size = 0, i = 0;
 
     if (objspace->par_mark.num_workers > 2) {
@@ -2116,10 +2116,10 @@ mark_const_tbl(rb_objspace_t *objspace, st_table *tbl, int lev, rb_gc_par_worker
 }
 
 static void
-push_array_continue(rb_objspace_t *objspace, struct deque *array_conts,
+push_array_continue(rb_objspace_t *objspace, deque_t *array_conts,
                     RVALUE *obj, size_t index)
 {
-    struct array_continue ac;
+    array_continue_t ac;
 
     ac.obj = obj;
     ac.index = index;
@@ -3059,7 +3059,7 @@ static void
 gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 {
     RVALUE *p;
-    struct deque *deque;
+    deque_t *deque;
 
     while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
         gc_mark_children(objspace, (VALUE)p, 0, worker);
@@ -3070,7 +3070,7 @@ static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
     RVALUE *p;
-    struct array_continue *ac;
+    array_continue_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
 
     do {
@@ -4276,8 +4276,23 @@ gc_profile_result(void)
 #if DEQUE_STATS
         rb_str_cat2(result, "\n");
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
-            struct deque *deque = &objspace->par_mark.deques[i];
+            deque_t *deque = &objspace->par_mark.deques[i];
             rb_str_catf(result, "Deque(%d) stats.\n", i+1);
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
+                        deque->deque_stats[PUSH],
+                        deque->deque_stats[POP_BOTTOM],
+                        deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
+                        deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
+                        deque->deque_stats[POP_TOP],
+                        deque->deque_stats[OVERFLOW],
+                        deque->deque_stats[OVERFLOW_MAX],
+                        deque->deque_stats[GETBACK]);
+        }
+
+        rb_str_cat2(result, "\n");
+	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
+            deque_t *deque = &objspace->par_mark.array_continue_deques[i];
+            rb_str_catf(result, "Array Continue Deque(%d) stats.\n", i+1);
             rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
                         deque->deque_stats[PUSH],
                         deque->deque_stats[POP_BOTTOM],
@@ -4356,11 +4371,11 @@ VALUE
 rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    struct deque *deque = &objspace->par_mark.deques[0];
+    deque_t *deque = &objspace->par_mark.deques[0];
     size_t res, tmp_num_workers, i;
     VALUE data, ary;
-    struct array_continue ac;
-    struct array_continue *res_ac;
+    array_continue_t ac;
+    array_continue_t *res_ac;
     struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     rb_gc_par_worker_t *worker;
     rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
@@ -4502,14 +4517,14 @@ rb_gc_test(void)
     ary = rb_ary_new2(GC_DEQUE_ARRAY_CONTINUE_STRIDE*2);
     rb_ary_store(ary, GC_DEQUE_ARRAY_CONTINUE_STRIDE*2-1, Qtrue);
     par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 0);
-    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[0];
+    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[0];
     gc_assert((VALUE)ac.obj == ary, "not eq\n");
     gc_assert(ac.index == 512, "not eq\n");
     par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 512);
-    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[1];
+    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
     gc_assert((VALUE)ac.obj != ary, "not eq\n");
     par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 510);
-    ac = ((struct array_continue *)(workers[0].local_array_conts->datas))[1];
+    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
     gc_assert((VALUE)ac.obj == ary, "not eq\n");
     gc_assert(ac.index == 1022, "not eq\n");
 
