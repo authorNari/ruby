@@ -524,8 +524,6 @@ rb_gc_par_worker_t *rb_gc_par_worker_from_native(void);
 rb_gc_par_worker_group_t *rb_gc_par_worker_group_create(size_t, rb_gc_par_worker_t *);
 void rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *, void (**) (rb_gc_par_worker_t *), size_t);
 void rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup);
-void rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *);
-void rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *);
 int rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *);
 int is_deques_empty(rb_gc_par_worker_group_t *);
 #endif

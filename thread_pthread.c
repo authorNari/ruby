@@ -841,7 +841,8 @@ gc_par_worker_thread_start(void *worker)
                if (data.terminate) {
                    w->group->finisheds++;
                    native_cond_signal(&w->group->owner_wait_cond);
-                   thread_debug("worker thread terminate: index(%d)\n", w->index);
+                   thread_debug("worker thread terminate: index(%d)\n",
+                                (int)w->index);
                    native_mutex_unlock(owner_lock);
                    return NULL;
                }
@@ -849,16 +850,17 @@ gc_par_worker_thread_start(void *worker)
                    thread_debug("catch new task.\n");
                    break;
                }
-               thread_debug("worker thread waiting: index(%d)\n", w->index);
+               thread_debug("worker thread waiting: index(%d)\n",
+                            (int)w->index);
                native_cond_wait(&w->group->workers_wait_cond, owner_lock);
                fetch_worker_group_data(&data, w->group);
                thread_debug("catch signal: seq_number(%d), prev(%d)\n",
-                            data.seq_number, prev_seq_number);
+                            (int)data.seq_number, (int)prev_seq_number);
            }
         });
 
         while(data.task != NULL) {
-            thread_debug("do task: index(%d)\n", w->index);
+            thread_debug("do task: index(%d)\n", (int)w->index);
             data.task(w);
 
             FGLOCK(owner_lock, {
@@ -867,7 +869,7 @@ gc_par_worker_thread_start(void *worker)
         }
 
         FGLOCK(owner_lock, {
-            thread_debug("finish worker: index(%d)\n", w->index);
+            thread_debug("finish worker: index(%d)\n", (int)w->index);
             w->group->finisheds++;
             native_cond_signal(&w->group->owner_wait_cond);
         });
@@ -889,7 +891,7 @@ rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *wgroup,
         wgroup->finisheds = 0;
         wgroup->offer_termination = 0;
         wgroup->do_index = 0;
-        thread_debug("run task: seq_number(%d)\n", wgroup->seq_number);
+        thread_debug("run task: seq_number(%d)\n", (int)wgroup->seq_number);
     });
 
     native_cond_broadcast(&wgroup->workers_wait_cond);
@@ -897,11 +899,11 @@ rb_gc_par_worker_group_run_tasks(rb_gc_par_worker_group_t *wgroup,
     FGLOCK(&wgroup->owner_lock, {
         while (wgroup->finisheds < wgroup->num_workers) {
             thread_debug("waiting in worker: %d/%d\n",
-                         wgroup->finisheds, wgroup->num_workers);
+                         (int)wgroup->finisheds, (int)wgroup->num_workers);
             native_cond_wait(&wgroup->owner_wait_cond, &wgroup->owner_lock);
         }
 
-        thread_debug("finished workers: %d\n", wgroup->finisheds);
+        thread_debug("finished workers: %d\n", (int)wgroup->finisheds);
         wgroup->tasks_length = 0;
     });
 }
@@ -924,10 +926,10 @@ rb_gc_par_worker_group_stop(rb_gc_par_worker_group_t *wgroup)
     FGLOCK(&wgroup->owner_lock, {
         while (wgroup->finisheds < wgroup->num_workers) {
             thread_debug("waiting in worker: %d/%d\n",
-                         wgroup->finisheds, wgroup->num_workers);
+                         (int)wgroup->finisheds, (int)wgroup->num_workers);
             native_cond_wait(&wgroup->owner_wait_cond, &wgroup->owner_lock);
         }
-        thread_debug("terminated workers: %d\n", wgroup->finisheds);
+        thread_debug("terminated workers: %d\n", (int)wgroup->finisheds);
     });
 }
 
@@ -986,18 +988,6 @@ rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
         }
     }
     return wgroup;
-}
-
-void
-rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *wgroup)
-{
-    native_mutex_lock(&wgroup->workers_lock);
-}
-
-void
-rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *wgroup)
-{
-    native_mutex_unlock(&wgroup->workers_lock);
 }
 
 int

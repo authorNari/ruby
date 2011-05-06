@@ -119,7 +119,7 @@ parallel_worker_threads()
     if (cpus > 8) {
         cpus = 8 + (cpus - 8) * (5/8);
     }
-    gc_debug("num_parallel_workers: %d\n", cpus);
+    gc_debug("num_parallel_workers: %d\n", (int)cpus);
 
     return cpus;
 }
@@ -271,7 +271,6 @@ enum deque_stat_type {
     POP_BOTTOM_WITH_CAS_LOSE,
     POP_TOP,
     OVERFLOW,
-    OVERFLOW_MAX,
     GETBACK,
     LAST_STAT_ID
 };
@@ -359,6 +358,32 @@ typedef struct array_continue {
     size_t index;
 } array_continue_t;
 
+
+#if 4 == SIZEOF_VOIDP
+/* 4KB / 4 - 2(for next field and malloc header) */
+#define PAGE_DATAS_SIZE 1048574
+#elif 8 == SIZEOF_VOIDP
+/* 4KB / 8 - 2 */
+#define PAGE_DATAS_SIZE 524286
+#endif
+
+#define OVERFLOW_STACK_PAGE_CACHE_LIMIT 4
+
+typedef struct stack_page {
+    void *datas[PAGE_DATAS_SIZE];
+    struct stack_page *next;
+} stack_page_t;
+
+typedef struct overflow_stack {
+    stack_page_t *page;
+    stack_page_t *cache;
+    size_t page_index;
+    size_t page_size;
+    size_t full_page_size;
+    size_t cache_size;
+    enum deque_data_type type;
+} overflow_stack_t;
+
 #define GC_DEQUE_VALUE_SIZE (1 << 14)
 #define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 12)
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
@@ -371,20 +396,11 @@ typedef struct deque {
     union deque_age age;
     size_t size;
     enum deque_data_type type;
+    overflow_stack_t overflow_stack;
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif
 } deque_t;
-
-/* 8 * 1028 * 1028 */
-#define PAR_MARKBUFFER_SIZE 8454272
-
-struct par_markbuffer {
-    VALUE *buffer;
-    size_t index;
-    size_t size;
-    int overflowed;
-};
 
 typedef struct rb_objspace {
     struct {
@@ -426,7 +442,6 @@ typedef struct rb_objspace {
 	int overflow;
     } markstack;
     struct {
-        struct par_markbuffer buffer;
         size_t num_workers;
         rb_gc_par_worker_group_t *worker_group;
         deque_t *deques;
@@ -537,6 +552,7 @@ rb_gc_set_params(void)
 static void gc_sweep(rb_objspace_t *);
 static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
+static void free_stack_pages(overflow_stack_t *);
 
 static int
 is_serial_working(rb_objspace_t *objspace)
@@ -551,6 +567,8 @@ is_serial_working(rb_objspace_t *objspace)
 void
 rb_objspace_free(rb_objspace_t *objspace)
 {
+    size_t i;
+
     gc_clear_mark_on_sweep_slots(objspace);
     gc_sweep(objspace);
     if (objspace->profile.record) {
@@ -565,7 +583,6 @@ rb_objspace_free(rb_objspace_t *objspace)
 	}
     }
     if (objspace->heap.sorted) {
-	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
 	    free(objspace->heap.sorted[i].slot->membase);
 	    free(objspace->heap.sorted[i].slot);
@@ -576,7 +593,16 @@ rb_objspace_free(rb_objspace_t *objspace)
     }
     if (!is_serial_working(objspace)) {
         rb_gc_par_worker_group_stop(objspace->par_mark.worker_group);
+        for (i = 0; i < objspace->par_mark.num_workers; i++) {
+            free_stack_pages(&objspace->par_mark.deques[i].overflow_stack);
+            free(objspace->par_mark.deques[i].datas);
+            free_stack_pages(&objspace->par_mark.array_continue_deques[i].overflow_stack);
+            free(objspace->par_mark.array_continue_deques[i].datas);
+        }
+        free(objspace->par_mark.deques);
+        free(objspace->par_mark.array_continue_deques);
     }
+
     free(objspace);
 }
 #else
@@ -1270,7 +1296,7 @@ deque_datas_store(deque_t *deque, size_t index, void *data)
         ((array_continue_t *)deque->datas)[index] = *((array_continue_t *)data);
 	break;
     default:
-        gc_assert(FALSE, "bug!\n");
+        rb_bug("deque_datas_store(): unknown type %d\n", (int)deque->type);
     }
 }
 
@@ -1283,7 +1309,7 @@ deque_datas_entry(deque_t *deque, size_t index)
     case DEQUE_DATA_ARRAY_CONTINUE:
         return (void *)(&((array_continue_t *)deque->datas)[index]);
     default:
-        gc_assert(FALSE, "bug!\n");
+        rb_bug("deque_datas_entry(): unknown type %d\n", deque->type);
     }
 }
 
@@ -1363,90 +1389,170 @@ pop_bottom(deque_t *deque, void **data)
     return FALSE;
 }
 
-#define PAR_MARKBUFFER_TRANSEFER_SIZE 10
-
-static void
-move_dates_to_mark_buffer(rb_objspace_t *objspace, deque_t *deque)
+static stack_page_t *
+stack_page_alloc(void)
 {
-    VALUE tmp;
-    size_t to;
-    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
+    stack_page_t *res;
 
-    rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
-    if(mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE > mbuf->size) {
-        mbuf->overflowed = TRUE;
-        gc_debug("parallel mark abort. mark buffer overflow.\n");
-        count_deque_stats(OVERFLOW_MAX);
-        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
-        return;
-    }
-    to = mbuf->index + PAR_MARKBUFFER_TRANSEFER_SIZE;
-    while(mbuf->index < to && pop_bottom(deque, (void **)&tmp)) {
-        count_cancel_deque_stats(POP_BOTTOM);
-        mbuf->buffer[mbuf->index] = tmp;
-        mbuf->index++;
-    }
-    rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
+    res = malloc(sizeof(stack_page_t));
+    gc_assert(sizeof(stack_page_t) == (4 * 1024 * 1024 - SIZEOF_VOIDP),
+              "stack_page size is not 4KB. %d bytes.\n", (int)(sizeof(stack_page_t) - SIZEOF_VOIDP));
+    if (!res)
+        rb_bug("stack_page malloc miss.");
+
+    return res;
 }
 
 static int
-get_back_dates_from_mark_buffer(rb_objspace_t *objspace, deque_t *deque)
+is_overflow_stask_empty(overflow_stack_t *stack)
 {
-    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
-    size_t to;
-    int res;
+    return stack->page == NULL;
+}
 
-    rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
-    if(mbuf->index == 0) {
-        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
+static size_t
+overflow_stask_size(overflow_stack_t *stack)
+{
+    if (is_overflow_stask_empty(stack)) {
+        return 0;
+    }
+    return stack->full_page_size + stack->page_index;
+}
+
+static void
+push_overflow_stack_page(overflow_stack_t *stack)
+{
+    stack_page_t *next;
+    int empty;
+
+    gc_assert(stack->page_index == stack->page_size, "page is not full.\n");
+    if (stack->cache_size > 0) {
+        next = stack->cache;
+        stack->cache = stack->cache->next;
+        stack->cache_size--;
+    }
+    else {
+        next = stack_page_alloc();
+    }
+    empty = is_overflow_stask_empty(stack);
+    next->next = stack->page;
+    stack->page = next;
+    stack->page_index = 0;
+    if (!empty) {
+        stack->full_page_size += stack->page_size;
+    }
+}
+
+static void
+pop_overflow_stack_page(overflow_stack_t *stack)
+{
+    stack_page_t *prev;
+
+    prev = stack->page->next;
+    gc_assert(stack->page_index == 0, "page is not empty.\n");
+    if (stack->cache_size < OVERFLOW_STACK_PAGE_CACHE_LIMIT) {
+        stack->page->next = stack->cache;
+        stack->cache = stack->page;
+        stack->cache_size++;
+    }
+    else {
+        free(stack->page);
+    }
+    stack->page = prev;
+    stack->page_index = stack->page_size;
+    if (prev != NULL) {
+        stack->full_page_size -= stack->page_size;
+    }
+}
+
+static void
+free_stack_pages(overflow_stack_t *stack)
+{
+    stack_page_t *page = stack->page;
+    while (page != NULL) {
+        free(page);
+        page = page->next;
+    }
+}
+
+static void
+stack_page_datas_store(overflow_stack_t *stack, size_t index, void *data)
+{
+    switch (stack->type) {
+    case DEQUE_DATA_VALUE:
+        ((VALUE *)stack->page->datas)[index] = (VALUE)data;
+	break;
+    case DEQUE_DATA_ARRAY_CONTINUE:
+        ((array_continue_t *)stack->page->datas)[index] = *((array_continue_t *)data);
+	break;
+    default:
+        rb_bug("stack_page_datas_store(): unknown type %d\n", stack->type);
+    }
+}
+
+static void *
+stack_page_datas_entry(overflow_stack_t *stack, size_t index)
+{
+    switch (stack->type) {
+    case DEQUE_DATA_VALUE:
+        return (void *)((VALUE *)stack->page->datas)[index];
+    case DEQUE_DATA_ARRAY_CONTINUE:
+        return (void *)(&((array_continue_t *)stack->page->datas)[index]);
+    default:
+        rb_bug("stack_page_datas_entry(): unknown type %d\n", stack->type);
+    }
+}
+
+static void
+push_overflow_stack(overflow_stack_t *stack, void *data)
+{
+    if (stack->page_index == stack->page_size) {
+        push_overflow_stack_page(stack);
+    }
+    stack_page_datas_store(stack, stack->page_index++, data);
+}
+
+static int
+pop_overflow_stack(overflow_stack_t *stack, void **data)
+{
+    if (is_overflow_stask_empty(stack)) {
         return FALSE;
     }
-    to = mbuf->index - PAR_MARKBUFFER_TRANSEFER_SIZE;
-    while(mbuf->index > to && mbuf->index != 0) {
-        mbuf->index--;
-        res = push_bottom(deque, (void *)mbuf->buffer[mbuf->index]);
-        count_cancel_deque_stats(PUSH);
-        gc_assert(res == TRUE, "must be true\n");
+    if (stack->page_index == 1) {
+        *data = stack_page_datas_entry(stack, --stack->page_index);
+        pop_overflow_stack_page(stack);
+        return TRUE;
     }
-    rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
+    *data = stack_page_datas_entry(stack, --stack->page_index);
     return TRUE;
 }
 
 static inline void
 push_bottom_with_overflow(rb_objspace_t *objspace, deque_t *deque, void *data)
 {
-    int res, i;
-
-    if(!(res = push_bottom(deque, data))) {
+    if(!push_bottom(deque, data)) {
         /* overflowed */
         gc_debug("overflowed: deque(%p)\n", deque);
         count_deque_stats(OVERFLOW);
-        move_dates_to_mark_buffer(objspace, deque);
-
-        res = push_bottom(deque, data);
-        gc_assert(res == TRUE, "must be true\n");
+        push_overflow_stack(&deque->overflow_stack, data);
     }
 }
 
 static int
 pop_bottom_with_get_back(rb_objspace_t *objspace, deque_t *deque, void **data)
 {
-    int i, res;
+    int i;
 
-    if(!(res = pop_bottom(deque, data))) {
+    if(!pop_bottom(deque, data)) {
         /* empty */
         gc_assert(is_empty_deque(deque, deque->bottom, deque->age.fields.top),
                   "not empty? %d, %d\n",
-                  deque->bottom, deque->age.fields.top);
+                  (int)deque->bottom, (int)deque->age.fields.top);
 
-        if (!get_back_dates_from_mark_buffer(objspace, deque)) {
+        if (!pop_overflow_stack(&deque->overflow_stack, data)) {
             return FALSE;
         }
-        gc_debug("getback: deque(%p)\n", deque);
-        count_deque_stats(GETBACK);
-        res = pop_bottom(deque, data);
     }
-    return res;
+    return TRUE;
 }
 
 static int
@@ -1505,9 +1611,14 @@ init_par_mark(rb_objspace_t *objspace)
         if (!p) {
             return rb_memerror();
         }
+        MEMZERO((void*)p, deque_t, 1);
         objspace->par_mark.deques[i].datas = p;
         objspace->par_mark.deques[i].size = GC_DEQUE_VALUE_SIZE;
         objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
+        objspace->par_mark.deques[i].overflow_stack.type = DEQUE_DATA_VALUE;
+        objspace->par_mark.deques[i].overflow_stack.page_size = PAGE_DATAS_SIZE;
+        /* for alloc new page at push_overflow_stack() */
+        objspace->par_mark.deques[i].overflow_stack.page_index = PAGE_DATAS_SIZE;
     }
 
     p = malloc(sizeof(deque_t) * num_workers);
@@ -1521,9 +1632,16 @@ init_par_mark(rb_objspace_t *objspace)
         if (!p) {
             return rb_memerror();
         }
+        MEMZERO((void*)p, deque_t, 1);
         objspace->par_mark.array_continue_deques[i].datas = p;
         objspace->par_mark.array_continue_deques[i].size = GC_DEQUE_ARRAY_CONTINUE_SIZE;
         objspace->par_mark.array_continue_deques[i].type = DEQUE_DATA_ARRAY_CONTINUE;
+        objspace->par_mark.array_continue_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_CONTINUE;;
+        objspace->par_mark.array_continue_deques[i].overflow_stack.page_size =
+            PAGE_DATAS_SIZE / (sizeof(array_continue_t) / SIZEOF_VOIDP);
+        objspace->par_mark.array_continue_deques[i].overflow_stack.page_index =
+            objspace->par_mark.array_continue_deques[i].overflow_stack.page_size;
+
     }
 
     p = malloc(sizeof(rb_gc_par_worker_t) * num_workers);
@@ -1543,13 +1661,6 @@ init_par_mark(rb_objspace_t *objspace)
     if (!objspace->par_mark.worker_group) {
         return rb_memerror();
     }
-
-    p = malloc(sizeof(VALUE) * PAR_MARKBUFFER_SIZE);
-    if (!p) {
-        return rb_memerror();
-    }
-    objspace->par_mark.buffer.buffer = (VALUE *)p;
-    objspace->par_mark.buffer.size = PAR_MARKBUFFER_SIZE;
 }
 
 static int
@@ -3074,7 +3185,7 @@ steal_mark_task(rb_gc_par_worker_t *worker)
     rb_objspace_t *objspace = &rb_objspace;
 
     do {
-        gc_debug("try steal_mark_task(%d)\n", worker->index);
+        gc_debug("try steal_mark_task(%d)\n", (int)worker->index);
 
         while (steal(objspace, objspace->par_mark.array_continue_deques,
                      worker->index, (void **)&ac)) {
@@ -4239,7 +4350,7 @@ gc_profile_result(void)
     if (objspace->profile.run && objspace->profile.count) {
 	result = rb_sprintf("GC %d invokes.\n", NUM2INT(gc_count(0)));
         index = 1;
-        rb_str_catf(result, "ParallelMarkThreads %d.\n", objspace->par_mark.num_workers);
+        rb_str_catf(result, "ParallelMarkThreads %d.\n", (int)objspace->par_mark.num_workers);
         rb_str_cat2(result, "Index    Invoke Time(sec)       Use Size(byte)     Total Size(byte)         Total Object                    GC Time(ms)\n");
 	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
 	    VALUE r = RARRAY_PTR(record)[i];
@@ -4278,14 +4389,13 @@ gc_profile_result(void)
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
             deque_t *deque = &objspace->par_mark.deques[i];
             rb_str_catf(result, "Deque(%d) stats.\n", i+1);
-            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, getback: %d\n",
                         deque->deque_stats[PUSH],
                         deque->deque_stats[POP_BOTTOM],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
                         deque->deque_stats[POP_TOP],
                         deque->deque_stats[OVERFLOW],
-                        deque->deque_stats[OVERFLOW_MAX],
                         deque->deque_stats[GETBACK]);
         }
 
@@ -4293,14 +4403,13 @@ gc_profile_result(void)
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
             deque_t *deque = &objspace->par_mark.array_continue_deques[i];
             rb_str_catf(result, "Array Continue Deque(%d) stats.\n", i+1);
-            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, overflow_max: %d, getback: %d\n",
+            rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, getback: %d\n",
                         deque->deque_stats[PUSH],
                         deque->deque_stats[POP_BOTTOM],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
                         deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
                         deque->deque_stats[POP_TOP],
                         deque->deque_stats[OVERFLOW],
-                        deque->deque_stats[OVERFLOW_MAX],
                         deque->deque_stats[GETBACK]);
         }
 #endif
@@ -4376,7 +4485,6 @@ rb_gc_test(void)
     VALUE data, ary;
     array_continue_t ac;
     array_continue_t *res_ac;
-    struct par_markbuffer *mbuf = &objspace->par_mark.buffer;
     rb_gc_par_worker_t *worker;
     rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
     void (*tasks[10]) (rb_gc_par_worker_t *worker);
@@ -4395,7 +4503,8 @@ rb_gc_test(void)
 
     deque->age.fields.top = 0;
     deque->age.fields.top = deque_decrement(deque, deque->age.fields.top);
-    gc_assert(deque->age.fields.top == GC_DEQUE_SIZE_MASK(), "%d %d\n", deque->age.fields.top, GC_DEQUE_SIZE_MASK());
+    gc_assert(deque->age.fields.top == GC_DEQUE_SIZE_MASK(), "%d %d\n",
+              (int)deque->age.fields.top, (int)GC_DEQUE_SIZE_MASK());
 
     deque->age.fields.top = 0;
     deque->bottom = 0;
@@ -4414,17 +4523,20 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX();
     gc_assert(is_full_deque(deque, deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
+              "size: %d\n",
+              (int)size_deque(deque, deque->bottom, deque->age.fields.top));
 
     deque->age.fields.top = 1;
     deque->bottom = 0;
     gc_assert(!is_full_deque(deque, deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
+              "size: %d\n",
+              (int)size_deque(deque, deque->bottom, deque->age.fields.top));
 
     deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX() - 1;
     gc_assert(!is_full_deque(deque, deque->bottom, deque->age.fields.top),
-              "size: %d\n", size_deque(deque, deque->bottom, deque->age.fields.top));
+              "size: %d\n",
+              (int)size_deque(deque, deque->bottom, deque->age.fields.top));
 
 
     printf("push_bottom test\n");
@@ -4432,16 +4544,20 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = push_bottom(deque, (void *)1);
     gc_assert(res, "false?");
-    gc_assert((int)deque->datas[0] == 1, "datas[0] %p\n", (void *)deque->datas[0]);
-    gc_assert((int)deque->bottom == 1, "bottom %d\n", deque->bottom);
+    gc_assert((VALUE)deque->datas[0] == 1, "datas[0] %p\n",
+              (void *)deque->datas[0]);
+    gc_assert((int)deque->bottom == 1, "bottom %d\n",
+              (int)deque->bottom);
 
     res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
-    gc_assert((int)deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
+    gc_assert((VALUE)deque->datas[1] == 2, "datas[1] %p\n",
+              (void *)deque->datas[1]);
 
     res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
-    gc_assert((int)deque->datas[1] == 2, "datas[1] %p\n", (void *)deque->datas[1]);
+    gc_assert((VALUE)deque->datas[1] == 2, "datas[1] %p\n",
+              (void *)deque->datas[1]);
 
     deque->age.fields.top = 0;
     deque->bottom = GC_DEQUE_MAX();
@@ -4457,23 +4573,24 @@ rb_gc_test(void)
     deque->bottom = 2;
     res = push_bottom(deque, (void *)2);
     gc_assert(res, "false?");
-    gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
-    gc_assert((int)deque->datas[2] == 2, "datas[3] %p\n", (void *)deque->datas[2]);
+    gc_assert(deque->bottom == 3, "bottom %d\n", (int)deque->bottom);
+    gc_assert((VALUE)deque->datas[2] == 2, "datas[3] %p\n",
+              (void *)deque->datas[2]);
 
     res = push_bottom(deque, (void *)2);
     gc_assert(!res, "true?");
-    gc_assert(deque->bottom == 3, "bottom %d\n", deque->bottom);
+    gc_assert(deque->bottom == 3, "bottom %d\n", (int)deque->bottom);
 
 
     printf("is_empty\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
     res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
-    gc_assert(res == TRUE, "res %d\n", res);
+    gc_assert(res == TRUE, "res %d\n", (int)res);
 
     deque->bottom = 1;
     res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
-    gc_assert(res == FALSE, "res %d\n", res);
+    gc_assert(res == FALSE, "res %d\n", (int)res);
 
     printf("order_access_memory_barrier\n");
     order_access_memory_barrier();
@@ -4507,11 +4624,12 @@ rb_gc_test(void)
     res = pop_bottom(deque, (void **)&data);
     gc_assert(res == TRUE, "fail\n");
     gc_assert(data == 3, "data %d\n", (int)data);
-    gc_assert(deque->bottom == 2, "bottom %d\n", deque->bottom);
+    gc_assert(deque->bottom == 2, "bottom %d\n", (int)deque->bottom);
     pop_bottom(deque, (void **)&data);
     pop_bottom(deque, (void **)&data);
     pop_bottom(deque, (void **)&data);
-    gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK(), "bottom %d\n", deque->bottom);
+    gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK(), "bottom %d\n",
+              (int)deque->bottom);
 
     printf("par_mark_array_object\n");
     ary = rb_ary_new2(GC_DEQUE_ARRAY_CONTINUE_STRIDE*2);
@@ -4553,7 +4671,7 @@ rb_gc_test(void)
     res = pop_top(workers[0].local_array_conts, (void **)&res_ac);
     gc_assert(res == TRUE, "fail\n");
     gc_assert((VALUE)res_ac->obj == ary, "ac.ary = %p\n", res_ac->obj);
-    gc_assert(res_ac->index == 512, "ac.index = %d\n", res_ac->index);
+    gc_assert(res_ac->index == 512, "ac.index = %d\n", (int)res_ac->index);
 
     printf("steal\n");
     tmp_num_workers = objspace->par_mark.num_workers;
@@ -4567,10 +4685,10 @@ rb_gc_test(void)
     push_bottom(&objspace->par_mark.deques[2], (void *)22);
     push_bottom(&objspace->par_mark.deques[3], (void *)31);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data == 11, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data == 21, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 2, (void **)&data);
     gc_assert(data == 12, "data: %d\n", (int)data);
@@ -4581,62 +4699,66 @@ rb_gc_test(void)
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 31, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == 0, "res: %d\n", res);
+    gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
     push_bottom(&objspace->par_mark.deques[0], (void *)1);
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 2;
     res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data == 1, "data: %d\n", (int)data);
     push_bottom(&objspace->par_mark.deques[1], (void *)11);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(data == 11, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == 0, "res: %d\n", res);
+    gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
     res = steal(objspace, objspace->par_mark.array_continue_deques,
                 1, (void **)&res_ac);
-    gc_assert(res == TRUE, "res: %d\n", res);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
     gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
 
-    printf("move_dates_to_mark_buffer\n");
+    printf("push_overflow_stack\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    for(i = 1;i < 11; i++) {
-        push_bottom(deque, (void *)i);
+    for (i = 0; i <= 4; i++) {
+        push_overflow_stack(&deque->overflow_stack, (void *)1);
+        gc_assert((VALUE)deque->overflow_stack.page->datas[0] == 1, "not 1\n");
+        gc_assert(deque->overflow_stack.page_index == 1, "not 1\n");
+        gc_assert(deque->overflow_stack.cache_size == 0, "invalid cache_size %d(%d)\n",
+                  (int)deque->overflow_stack.cache_size, (int)i);
+        deque->overflow_stack.page_index = PAGE_DATAS_SIZE;
     }
-    move_dates_to_mark_buffer(objspace, deque);
-    gc_assert(deque->bottom == 0, "bottom: (%d)\n", deque->bottom);
-    /* overflow */
-    mbuf->index = PAR_MARKBUFFER_SIZE;
-    push_bottom(deque, (void *)1);
-    move_dates_to_mark_buffer(objspace, deque);
-    gc_assert(mbuf->overflowed == TRUE, "index: (%d)\n", mbuf->index);
-    gc_assert(deque->bottom == 1, "bottom: (%d)\n", deque->bottom);
-    mbuf->index = 0;
-    mbuf->overflowed = FALSE;
+    gc_assert(overflow_stask_size(&deque->overflow_stack) == PAGE_DATAS_SIZE*5,
+              "size %d\n", (int)overflow_stask_size(&deque->overflow_stack));
 
-    printf("get_back_dates_from_mark_buffer\n");
-    mbuf->index = 10;
-    deque->age.fields.top = 0;
-    deque->bottom = 0;
-    res = get_back_dates_from_mark_buffer(objspace, deque);
+    printf("pop_overflow_stack\n");
+    for (i = 1; i <= 4; i++) {
+        deque->overflow_stack.page_index = 1;
+        res = pop_overflow_stack(&deque->overflow_stack, (void **)&data);
+        gc_assert(res == TRUE, "false?\n");
+        gc_assert((int)data == 1, "(%d)\n", (int)data);
+        gc_assert(deque->overflow_stack.page_index == PAGE_DATAS_SIZE, "invalid size\n");
+        gc_assert(deque->overflow_stack.cache_size == i, "invalid cache_size\n");
+    }
+    deque->overflow_stack.page_index = 1;
+    res = pop_overflow_stack(&deque->overflow_stack, (void **)&data);
     gc_assert(res == TRUE, "false?\n");
-    gc_assert((int)deque->datas[0] == 1, "(%d)\n", (int)deque->datas[0]);
-    gc_assert((int)deque->datas[9] == 10, "(%d)\n", (int)deque->datas[9]);
-    res = get_back_dates_from_mark_buffer(objspace, deque);
+    gc_assert(deque->overflow_stack.cache_size == 4, "invalid cache_size %d(%d)\n",
+                  (int)deque->overflow_stack.cache_size, (int)i);
+    res = pop_overflow_stack(&deque->overflow_stack, (void **)&data);
     gc_assert(res == FALSE, "true?\n");
+    gc_assert(overflow_stask_size(&deque->overflow_stack) == 0,
+              "invalid stack size\n");
 
     printf("push_bottom_with_overflow\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    mbuf->index = 0;
     push_bottom_with_overflow(objspace, deque, (void *)1);
-    gc_assert((int)deque->datas[0] == 1, "eq\n");
+    gc_assert((VALUE)deque->datas[0] == 1, "eq\n");
 
     deque->age.fields.top = 0;
     deque->bottom = 0;
@@ -4644,10 +4766,11 @@ rb_gc_test(void)
         push_bottom(deque, (void *)(i+1));
     }
     push_bottom_with_overflow(objspace, deque, (void *)2);
-    gc_assert((int)deque->datas[GC_DEQUE_MAX() - PAR_MARKBUFFER_TRANSEFER_SIZE] == 2,
-              "data %d\n", (int)deque->datas[GC_DEQUE_MAX() - PAR_MARKBUFFER_TRANSEFER_SIZE]);
-    gc_assert(mbuf->index != 0, "not zero\n");
-    gc_assert(mbuf->buffer[0] == GC_DEQUE_MAX(), "%d\n", (int)mbuf->buffer[0]);
+    gc_assert((VALUE)deque->overflow_stack.page->datas[0] == 2,
+              "data %p\n", deque->overflow_stack.page->datas[0]);
+    gc_assert(deque->overflow_stack.page_index == 1, "not 1\n");
+    gc_assert(deque->overflow_stack.cache_size == 3, "cache_size %d\n",
+              (int)deque->overflow_stack.cache_size);
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
@@ -4658,7 +4781,10 @@ rb_gc_test(void)
     gc_assert(data == 1, "%d\n", (int)data);
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == TRUE, "false?\n");
-    gc_assert(data == GC_DEQUE_MAX(), "%d\n", (int)data);
+    gc_assert(data == 2, "%d\n", (int)data);
+    gc_assert(deque->overflow_stack.full_page_size == 0, "not zero\n");
+    gc_assert(deque->overflow_stack.page_index == PAGE_DATAS_SIZE, "not zero\n");
+    gc_assert(deque->overflow_stack.cache_size == 4, "not 1\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
@@ -4667,12 +4793,13 @@ rb_gc_test(void)
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
     gc_assert(worker->index == objspace->par_mark.num_workers-1,
-              "index(%d)?\n", worker->index);
+              "index(%d)?\n", (int)worker->index);
     worker = &workers[0];
     gc_assert(worker->index == 0, "?\n");
 
     printf("run task\n");
-    gc_debug("objspace->par_mark.num_workers(%d)\n", objspace->par_mark.num_workers);
+    gc_debug("objspace->par_mark.num_workers(%d)\n",
+             (int)objspace->par_mark.num_workers);
     tasks[0] = gc_par_print_test;
     tasks[1] = gc_par_print_test;
     tasks[2] = gc_par_print_test;
