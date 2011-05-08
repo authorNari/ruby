@@ -4417,13 +4417,13 @@ gc_profile_result(void)
             deque_t *deque = &objspace->par_mark.deques[i];
             rb_str_catf(result, "Deque(%d) stats.\n", i+1);
             rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, getback: %d\n",
-                        deque->deque_stats[PUSH],
-                        deque->deque_stats[POP_BOTTOM],
-                        deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
-                        deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
-                        deque->deque_stats[POP_TOP],
-                        deque->deque_stats[OVERFLOW],
-                        deque->deque_stats[GETBACK]);
+                        (int)deque->deque_stats[PUSH],
+                        (int)deque->deque_stats[POP_BOTTOM],
+                        (int)deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
+                        (int)deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
+                        (int)deque->deque_stats[POP_TOP],
+                        (int)deque->deque_stats[OVERFLOW],
+                        (int)deque->deque_stats[GETBACK]);
         }
 
         rb_str_cat2(result, "\n");
@@ -4431,13 +4431,13 @@ gc_profile_result(void)
             deque_t *deque = &objspace->par_mark.array_continue_deques[i];
             rb_str_catf(result, "Array Continue Deque(%d) stats.\n", i+1);
             rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, getback: %d\n",
-                        deque->deque_stats[PUSH],
-                        deque->deque_stats[POP_BOTTOM],
-                        deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
-                        deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
-                        deque->deque_stats[POP_TOP],
-                        deque->deque_stats[OVERFLOW],
-                        deque->deque_stats[GETBACK]);
+                        (int)deque->deque_stats[PUSH],
+                        (int)deque->deque_stats[POP_BOTTOM],
+                        (int)deque->deque_stats[POP_BOTTOM_WITH_CAS_WIN],
+                        (int)deque->deque_stats[POP_BOTTOM_WITH_CAS_LOSE],
+                        (int)deque->deque_stats[POP_TOP],
+                        (int)deque->deque_stats[OVERFLOW],
+                        (int)deque->deque_stats[GETBACK]);
         }
 #endif
     }
