@@ -2255,7 +2255,7 @@ par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
     }
 
     for(; index < end; index++) {
-        gc_mark(objspace, *ptr++, 0, worker);
+        gc_mark(objspace, *(ptr+index), 0, worker);
     }
     if (end < len) {
         push_array_continue(objspace, worker->local_array_conts, obj, index);
@@ -3180,11 +3180,21 @@ static void
 gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 {
     RVALUE *p;
-    deque_t *deque;
+    array_continue_t *ac;
+    int deque_empty = FALSE;
 
-    while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
-        gc_mark_children(objspace, (VALUE)p, 0, worker);
-    }
+    do {
+        while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
+            gc_mark_children(objspace, (VALUE)p, 0, worker);
+        }
+
+        while(pop_bottom_with_get_back(objspace, worker->local_array_conts, (void **)&ac)) {
+            par_mark_array_object(objspace, worker, ac->obj, ac->index);
+        }
+
+        deque_empty = is_empty_deque(worker->local_deque, worker->local_deque->bottom, worker->local_deque->age.fields.top) &&
+            is_empty_deque(worker->local_array_conts, worker->local_array_conts->bottom, worker->local_array_conts->age.fields.top);
+    } while (!deque_empty);
 }
 
 static void
@@ -3200,6 +3210,7 @@ steal_mark_task(rb_gc_par_worker_t *worker)
         while (steal(objspace, objspace->par_mark.array_continue_deques,
                      worker->index, (void **)&ac)) {
             par_mark_array_object(objspace, worker, ac->obj, ac->index);
+            gc_follow_marking_deques(objspace, worker);
         }
 
         while (steal(objspace, objspace->par_mark.deques,
