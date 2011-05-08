@@ -860,7 +860,8 @@ gc_par_worker_thread_start(void *worker)
         });
 
         while(data.task != NULL) {
-            thread_debug("do task: index(%d)\n", (int)w->index);
+            thread_debug("do task: index(%d) task(%p)\n",
+                         (int)w->index, data.task);
             data.task(w);
 
             FGLOCK(owner_lock, {
