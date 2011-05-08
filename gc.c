@@ -359,10 +359,10 @@ typedef struct array_continue {
 } array_continue_t;
 
 
-#if 4 == SIZEOF_VOIDP
+#ifndef __LP64__
 /* 4KB / 4 - 2(for next field and malloc header) */
 #define PAGE_DATAS_SIZE 1048574
-#elif 8 == SIZEOF_VOIDP
+#else
 /* 4KB / 8 - 2 */
 #define PAGE_DATAS_SIZE 524286
 #endif
@@ -384,8 +384,14 @@ typedef struct overflow_stack {
     enum deque_data_type type;
 } overflow_stack_t;
 
+#ifndef __LP64__
 #define GC_DEQUE_VALUE_SIZE (1 << 14)
 #define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 12)
+#else
+#define GC_DEQUE_VALUE_SIZE (1 << 17)
+#define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 13)
+#endif
+
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
 #define GC_DEQUE_MAX() (deque->size - 2)
 #define GC_DEQUE_ARRAY_CONTINUE_STRIDE 512
