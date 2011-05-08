@@ -1605,13 +1605,13 @@ init_par_mark(rb_objspace_t *objspace)
         return rb_memerror();
     }
     objspace->par_mark.deques = (deque_t *)p;
+    MEMZERO((void*)p, deque_t, num_workers);
 
     for (i = 0; i < num_workers; i++) {
         p = malloc(GC_DEQUE_VALUE_SIZE * sizeof(VALUE));
         if (!p) {
             return rb_memerror();
         }
-        MEMZERO((void*)p, deque_t, 1);
         objspace->par_mark.deques[i].datas = p;
         objspace->par_mark.deques[i].size = GC_DEQUE_VALUE_SIZE;
         objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
@@ -1626,6 +1626,7 @@ init_par_mark(rb_objspace_t *objspace)
         return rb_memerror();
     }
     objspace->par_mark.array_continue_deques = (deque_t *)p;
+    MEMZERO((void*)p, deque_t, num_workers);
 
     for (i = 0; i < num_workers; i++) {
         p = malloc(GC_DEQUE_ARRAY_CONTINUE_SIZE * sizeof(array_continue_t));
@@ -2020,7 +2021,7 @@ is_pointer_to_heap(rb_objspace_t *objspace, void *ptr)
 }
 
 static void
-mark_locations_array(rb_objspace_t *objspace, VALUE *x, register long n, rb_gc_par_worker_t *w)
+mark_locations_array(rb_objspace_t *objspace, register VALUE *x, register long n, rb_gc_par_worker_t *w)
 {
     VALUE v;
     while (n--) {
@@ -3083,23 +3084,30 @@ void rb_vm_mark(void *ptr);
 
 #define numberof(array) (int)(sizeof(array) / sizeof((array)[0]))
 
+union regs_gc_mark {
+    rb_jmp_buf j;
+    VALUE v[sizeof(rb_jmp_buf) / sizeof(VALUE)];
+};
+
+static void
+save_regs_gc_mark(rb_objspace_t *objspace, union regs_gc_mark *regs, rb_thread_t *th)
+{
+    SET_STACK_END;
+
+    FLUSH_REGISTER_WINDOWS;
+    /* This assumes that all registers are saved into the jmp_buf (and stack) */
+    rb_setjmp(regs->j);
+}
+
 static void
 mark_current_machine_context(rb_objspace_t *objspace, rb_thread_t *th,
                              rb_gc_par_worker_t *w)
 {
-    union {
-	rb_jmp_buf j;
-	VALUE v[sizeof(rb_jmp_buf) / sizeof(VALUE)];
-    } save_regs_gc_mark;
     VALUE *stack_start, *stack_end;
-
-    FLUSH_REGISTER_WINDOWS;
-    /* This assumes that all registers are saved into the jmp_buf (and stack) */
-    rb_setjmp(save_regs_gc_mark.j);
 
     GET_STACK_BOUNDS(stack_start, stack_end, 1);
 
-    mark_locations_array(objspace, save_regs_gc_mark.v, numberof(save_regs_gc_mark.v), w);
+    mark_locations_array(objspace, w->regs_gc_mark, numberof(w->regs_gc_mark), w);
 
     rb_gc_mark_locations(stack_start, stack_end);
 #ifdef __ia64
@@ -3135,7 +3143,7 @@ gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
 }
 
 static void
-gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th,
+gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
              void (**tasks) (rb_gc_par_worker_t *), size_t tasks_length)
 {
     size_t i;
@@ -3143,6 +3151,7 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th,
     if (is_serial_working(objspace)) {
         objspace->serial_worker.current_thread = th;
         objspace->serial_worker.marked_objects = 0;
+        objspace->serial_worker.regs_gc_mark = regs;
         for (i = 0; i < tasks_length; i++) {
             tasks[i](&objspace->serial_worker);
         }
@@ -3154,6 +3163,7 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th,
             objspace->par_mark.array_continue_deques[i].bottom = 0;
             objspace->par_mark.array_continue_deques[i].age.data = 0;
             objspace->par_mark.worker_group->workers[i].current_thread = th;
+            objspace->par_mark.worker_group->workers[i].regs_gc_mark = regs;
         }
         rb_gc_par_worker_group_run_tasks(objspace->par_mark.worker_group,
                                          tasks, tasks_length);
@@ -3323,8 +3333,11 @@ gc_marks(rb_objspace_t *objspace)
 {
     rb_thread_t *th = GET_THREAD();
     void (*tasks[100]) (rb_gc_par_worker_t *worker);
+    union regs_gc_mark regs;
     size_t tasks_length = 0;
     size_t i;
+
+    if (GC_NOTIFY) printf("start gc_marks()\n");
 
     GC_PROF_MARK_TIMER_START;
 
@@ -3336,6 +3349,7 @@ gc_marks(rb_objspace_t *objspace)
     SET_STACK_END;
 
     init_mark_stack(objspace);
+    save_regs_gc_mark(objspace, &regs, th);
 
     tasks[tasks_length++] = vm_mark_task;
     tasks[tasks_length++] = finalizer_table_mark_task;
@@ -3350,7 +3364,7 @@ gc_marks(rb_objspace_t *objspace)
     for (i = 0; i < objspace->par_mark.num_workers; i++) {
         tasks[tasks_length++] = steal_mark_task;
     }
-    gc_run_tasks(objspace, th, tasks, tasks_length);
+    gc_run_tasks(objspace, th, regs.v, tasks, tasks_length);
 
     rb_gc_mark_parser();
 
@@ -3369,6 +3383,8 @@ gc_marks(rb_objspace_t *objspace)
     }
 
     GC_PROF_MARK_TIMER_STOP;
+
+    if (GC_NOTIFY) printf("end gc_marks()\n");
 }
 
 static int

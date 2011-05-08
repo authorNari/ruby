@@ -511,6 +511,7 @@ typedef struct rb_gc_par_worker_struct {
     struct deque *local_array_conts;
     size_t marked_objects;
     rb_thread_t *current_thread;
+    VALUE *regs_gc_mark;
 } rb_gc_par_worker_t;
 #endif
 
