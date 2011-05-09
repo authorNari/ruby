@@ -1674,25 +1674,25 @@ static int
 steal(rb_objspace_t *objspace, deque_t *deques,
       size_t deque_index, void **data)
 {
-    deque_t *tmp_deque, *res_deque = NULL;
-    size_t res_size = 0, tmp_size = 0, i = 0;
+    size_t c1, c2, sz1, sz2, res_size = 0, tmp_size = 0, i = 0;
+    VALUE randgen = rb_cRandom;
 
     if (objspace->par_mark.num_workers > 2) {
-        for (i = 0; i < objspace->par_mark.num_workers; i++) {
-            if (i != deque_index) {
-                tmp_deque = &deques[i];
-                tmp_size = size_deque(tmp_deque, tmp_deque->bottom, tmp_deque->age.fields.top);
-                if (tmp_size > res_size) {
-                    res_size = tmp_size;
-                    res_deque = tmp_deque;
-                }
-            }
+        c1 = deque_index;
+        while (c1 == deque_index) {
+            c1 = rb_random_real(randgen) * objspace->par_mark.num_workers;
         }
-        if (res_deque == NULL) {
-            return FALSE;
+        c2 = deque_index;
+        while (c2 == deque_index) {
+            c2 = rb_random_real(randgen) * objspace->par_mark.num_workers;
+        }
+        sz1 = size_deque(&deques[c1], deques[c1].bottom, deques[c1].age.fields.top);
+        sz2 = size_deque(&deques[c2], deques[c2].bottom, deques[c2].age.fields.top);
+        if (sz1 > sz2) {
+            return pop_top(&deques[c1], data);
         }
         else {
-            return pop_top(res_deque, data);
+            return pop_top(&deques[c2], data);
         }
     }
     else if (objspace->par_mark.num_workers == 2) {
@@ -4706,7 +4706,7 @@ rb_gc_test(void)
     gc_assert((VALUE)res_ac->obj == ary, "ac.ary = %p\n", res_ac->obj);
     gc_assert(res_ac->index == 512, "ac.index = %d\n", (int)res_ac->index);
 
-    printf("steal\n");
+    printf("steal. use randome, so lack of stability test case.\n");
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 4;
     deque->bottom = 0;
@@ -4719,18 +4719,22 @@ rb_gc_test(void)
     push_bottom(&objspace->par_mark.deques[3], (void *)31);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data == 21, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 2, (void **)&data);
-    gc_assert(data == 12, "data: %d\n", (int)data);
+    gc_assert(data != 0, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(data == 13, "data: %d\n", (int)data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(data == 22, "data: %d\n", (int)data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(data == 31, "data: %d\n", (int)data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
     res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
     gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
