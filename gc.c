@@ -103,7 +103,7 @@ static unsigned int initial_malloc_limit   = GC_MALLOC_LIMIT;
 static unsigned int initial_heap_min_slots = HEAP_MIN_SLOTS;
 #endif
 static unsigned int initial_free_min       = FREE_MIN;
-static unsigned int initial_par_mark_threads = 0;
+static unsigned int initial_par_gc_threads = 0;
 
 static size_t
 parallel_worker_threads()
@@ -1600,7 +1600,7 @@ init_par_mark(rb_objspace_t *objspace)
     rb_gc_par_worker_t *workers;
     size_t num_workers;
 
-    objspace->par_mark.num_workers = num_workers = initial_par_mark_threads;
+    objspace->par_mark.num_workers = num_workers = initial_par_gc_threads;
     if (num_workers < 1) {
         gc_debug("init_par_mark cancel.\n");
         return;
