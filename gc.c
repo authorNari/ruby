@@ -1696,6 +1696,11 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     objspace->par_markstack.used -= size;
     deque->local_markstack.length -= size;
 
+    if (objspace->par_markstack.used < objspace->par_markstack.length/4) {
+        free_global_par_markstacks(objspace,
+                                   objspace->par_markstack.length/2);
+    }
+
     if (need_lock) {
         rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
     }
@@ -3325,6 +3330,7 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->par_mark.deques[i].bottom = 0;
             objspace->par_mark.deques[i].age.data = 0;
+            objspace->par_mark.deques[i].local_markstack.max_used = 0;
             objspace->par_mark.array_continue_deques[i].bottom = 0;
             objspace->par_mark.array_continue_deques[i].age.data = 0;
             objspace->par_mark.worker_group->workers[i].current_thread = th;
@@ -3384,6 +3390,13 @@ steal_mark_task(rb_gc_par_worker_t *worker)
             gc_follow_marking_deques(objspace, worker);
         }
     } while (!rb_par_steal_task_offer_termination(worker->group));
+
+    if (worker->local_deque->local_markstack.max_used < 
+        (worker->local_deque->local_markstack.length / 4)) {
+        free_local_par_markstacks(objspace, worker->local_deque,
+                                  worker->local_deque->local_markstack.length / 2,
+                                  TRUE);
+    }
 }
 
 
