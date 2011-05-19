@@ -349,7 +349,7 @@ union deque_age {
 };
 
 enum deque_data_type {
-    DEQUE_DATA_VALUE,
+    DEQUE_DATA_MARKSTACK_PTR,
     DEQUE_DATA_ARRAY_CONTINUE
 };
 
@@ -384,17 +384,29 @@ typedef struct overflow_stack {
     enum deque_data_type type;
 } overflow_stack_t;
 
+
+#define GC_PAR_MARKSTACK_OBJS_SIZE 31
+
+/* 32bit: 128Byte, 64bit: 256Byte */
+typedef struct par_markstack {
+    VALUE objs[GC_PAR_MARKSTACK_OBJS_SIZE];
+    struct par_markstack *next;
+} par_markstack_t;
+
 #ifndef __LP64__
-#define GC_DEQUE_VALUE_SIZE (1 << 14)
-#define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 12)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 8)
+#define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 12)
+#define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 * 2 / sizeof(par_markstack_t))
 #else
-#define GC_DEQUE_VALUE_SIZE (1 << 17)
-#define GC_DEQUE_ARRAY_CONTINUE_SIZE (1 << 13)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 11)
+#define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 13)
+#define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 / sizeof(par_markstack_t))
 #endif
 
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
 #define GC_DEQUE_MAX() (deque->size - 2)
-#define GC_DEQUE_ARRAY_CONTINUE_STRIDE 512
+#define GC_ARRAY_CONTINUE_DEQUE_STRIDE 512
+
 
 typedef struct deque {
     void **datas;
@@ -403,6 +415,13 @@ typedef struct deque {
     size_t size;
     enum deque_data_type type;
     overflow_stack_t overflow_stack;
+    struct {
+        par_markstack_t *list;
+        size_t index;
+        size_t length;
+        size_t used;
+        size_t max_used;
+    } local_markstack;
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif
@@ -453,6 +472,11 @@ typedef struct rb_objspace {
         deque_t *deques;
         deque_t *array_continue_deques;
     } par_mark;
+    struct {
+        par_markstack_t *global_list;
+        size_t length;
+        size_t used;
+    } par_markstack;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -1295,7 +1319,7 @@ static void
 deque_datas_store(deque_t *deque, size_t index, void *data)
 {
     switch (deque->type) {
-    case DEQUE_DATA_VALUE:
+    case DEQUE_DATA_MARKSTACK_PTR:
         ((VALUE *)deque->datas)[index] = (VALUE)data;
 	break;
     case DEQUE_DATA_ARRAY_CONTINUE:
@@ -1310,7 +1334,7 @@ static void *
 deque_datas_entry(deque_t *deque, size_t index)
 {
     switch (deque->type) {
-    case DEQUE_DATA_VALUE:
+    case DEQUE_DATA_MARKSTACK_PTR:
         return (void *)((VALUE *)deque->datas)[index];
     case DEQUE_DATA_ARRAY_CONTINUE:
         return (void *)(&((array_continue_t *)deque->datas)[index]);
@@ -1401,6 +1425,7 @@ stack_page_alloc(void)
     stack_page_t *res;
 
     res = malloc(sizeof(stack_page_t));
+    /* TODO: it's 4MB. I'll fix it to 4KB. */
     gc_assert(sizeof(stack_page_t) == (4 * 1024 * 1024 - SIZEOF_VOIDP),
               "stack_page size is not 4KB. %d bytes.\n", (int)(sizeof(stack_page_t) - SIZEOF_VOIDP));
     if (!res)
@@ -1484,7 +1509,7 @@ static void
 stack_page_datas_store(overflow_stack_t *stack, size_t index, void *data)
 {
     switch (stack->type) {
-    case DEQUE_DATA_VALUE:
+    case DEQUE_DATA_MARKSTACK_PTR:
         ((VALUE *)stack->page->datas)[index] = (VALUE)data;
 	break;
     case DEQUE_DATA_ARRAY_CONTINUE:
@@ -1499,7 +1524,7 @@ static void *
 stack_page_datas_entry(overflow_stack_t *stack, size_t index)
 {
     switch (stack->type) {
-    case DEQUE_DATA_VALUE:
+    case DEQUE_DATA_MARKSTACK_PTR:
         return (void *)((VALUE *)stack->page->datas)[index];
     case DEQUE_DATA_ARRAY_CONTINUE:
         return (void *)(&((array_continue_t *)stack->page->datas)[index]);
@@ -1546,8 +1571,6 @@ push_bottom_with_overflow(rb_objspace_t *objspace, deque_t *deque, void *data)
 static int
 pop_bottom_with_get_back(rb_objspace_t *objspace, deque_t *deque, void **data)
 {
-    int i;
-
     if(!pop_bottom(deque, data)) {
         /* empty */
         gc_assert(is_empty_deque(deque, deque->bottom, deque->age.fields.top),
@@ -1593,6 +1616,136 @@ pop_top(deque_t *deque, void **data)
 }
 
 static void
+alloc_global_par_markstacks(rb_objspace_t *objspace, size_t size)
+{
+    size_t i;
+    par_markstack_t *p;
+
+    for (i = 0; i < size; i++) {
+        p = malloc(sizeof(par_markstack_t));
+        p->next = objspace->par_markstack.global_list;
+        objspace->par_markstack.global_list = p;
+    }
+    objspace->par_markstack.length += size;
+}
+
+static void
+free_global_par_markstacks(rb_objspace_t *objspace, size_t size)
+{
+    size_t i;
+    par_markstack_t *p;
+
+    for (i = 0; i < size; i++) {
+        p = objspace->par_markstack.global_list;
+        objspace->par_markstack.global_list = p->next;
+        free(p);
+    }
+    objspace->par_markstack.length -= size;
+}
+
+static void
+alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
+                            size_t size, int need_lock)
+{
+    size_t i;
+    par_markstack_t *top, *end;
+
+    if (need_lock) {
+        /* TODO: mark threads lock!! */
+    }
+
+    top = end = objspace->par_markstack.global_list;
+    for (i = 0; i < size; i++) {
+        if (end == NULL) {
+            alloc_global_par_markstacks(objspace,
+                                        objspace->par_markstack.length);
+        }
+        end = end->next;
+    }
+
+    objspace->par_markstack.global_list = end->next;
+    end->next = deque->local_markstack.list;
+    deque->local_markstack.list = top;
+    objspace->par_markstack.used += size;
+    deque->local_markstack.length += size;
+
+    if (need_lock) {
+        /* TODO: mark threads lock!! */
+    }
+}
+
+static void
+free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
+                              size_t size, int need_lock)
+{
+    size_t i;
+    par_markstack_t *top, *end;
+
+    if (need_lock) {
+        /* TODO: mark threads lock!! */
+    }
+
+    top = end = deque->local_markstack.list;
+    for (i = 0; i < size; i++) {
+        end = end->next;
+    }
+
+    deque->local_markstack.list = end->next;
+    end->next = objspace->par_markstack.global_list;
+    objspace->par_markstack.global_list = top;
+    objspace->par_markstack.used -= size;
+    deque->local_markstack.length -= size;
+
+    if (need_lock) {
+        /* TODO: mark threads lock!! */
+    }
+}
+
+static inline void
+push_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE obj)
+{
+    par_markstack_t *m;
+
+    m = deque->local_markstack.list;
+    if (deque->local_markstack.index >= GC_PAR_MARKSTACK_OBJS_SIZE) {
+        push_bottom_with_overflow(objspace, deque, (void *)m);
+        deque->local_markstack.list = m->next;
+        m = deque->local_markstack.list;
+        deque->local_markstack.used++;
+        if (deque->local_markstack.max_used < deque->local_markstack.used) {
+            deque->local_markstack.max_used = deque->local_markstack.used;
+        }
+        if (m == NULL) {
+            alloc_local_par_markstacks(objspace, deque,
+                                       deque->local_markstack.length, TRUE);
+        }
+        deque->local_markstack.index = 0;
+    }
+
+    m->objs[deque->local_markstack.index++] = obj;
+}
+
+static inline int
+pop_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE *obj)
+{
+    par_markstack_t *m;
+
+    m = deque->local_markstack.list;
+    if (deque->local_markstack.index == 0) {
+        if (!pop_bottom_with_get_back(objspace, deque, (void **)&m)) {
+            return FALSE;
+        }
+        m->next = deque->local_markstack.list;
+        deque->local_markstack.list = m;
+        deque->local_markstack.used--;
+        deque->local_markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
+    }
+
+    *obj = m->objs[--deque->local_markstack.index];
+    return TRUE;
+}
+
+static void
 init_par_mark(rb_objspace_t *objspace)
 {
     void *p;
@@ -1606,6 +1759,8 @@ init_par_mark(rb_objspace_t *objspace)
         return;
     }
 
+    alloc_global_par_markstacks(objspace, GC_INIT_PAR_MARKSTACK_SIZE);
+
     p = malloc(sizeof(deque_t) * num_workers);
     if (!p) {
         return rb_memerror();
@@ -1614,17 +1769,21 @@ init_par_mark(rb_objspace_t *objspace)
     MEMZERO((void*)p, deque_t, num_workers);
 
     for (i = 0; i < num_workers; i++) {
-        p = malloc(GC_DEQUE_VALUE_SIZE * sizeof(VALUE));
+        p = malloc(GC_MSTACK_PTR_DEQUE_SIZE * sizeof(VALUE));
         if (!p) {
             return rb_memerror();
         }
         objspace->par_mark.deques[i].datas = p;
-        objspace->par_mark.deques[i].size = GC_DEQUE_VALUE_SIZE;
-        objspace->par_mark.deques[i].type = DEQUE_DATA_VALUE;
-        objspace->par_mark.deques[i].overflow_stack.type = DEQUE_DATA_VALUE;
+        objspace->par_mark.deques[i].size = GC_MSTACK_PTR_DEQUE_SIZE;
+        objspace->par_mark.deques[i].type = DEQUE_DATA_MARKSTACK_PTR;
+        objspace->par_mark.deques[i].overflow_stack.type = DEQUE_DATA_MARKSTACK_PTR;
         objspace->par_mark.deques[i].overflow_stack.page_size = PAGE_DATAS_SIZE;
         /* for alloc new page at push_overflow_stack() */
         objspace->par_mark.deques[i].overflow_stack.page_index = PAGE_DATAS_SIZE;
+
+        alloc_local_par_markstacks(objspace, &objspace->par_mark.deques[i],
+                                   GC_INIT_PAR_MARKSTACK_SIZE / 2 /num_workers,
+                                   FALSE);
     }
 
     p = malloc(sizeof(deque_t) * num_workers);
@@ -1635,13 +1794,13 @@ init_par_mark(rb_objspace_t *objspace)
     MEMZERO((void*)p, deque_t, num_workers);
 
     for (i = 0; i < num_workers; i++) {
-        p = malloc(GC_DEQUE_ARRAY_CONTINUE_SIZE * sizeof(array_continue_t));
+        p = malloc(GC_ARRAY_CONTINUE_DEQUE_SIZE * sizeof(array_continue_t));
         if (!p) {
             return rb_memerror();
         }
         MEMZERO((void*)p, deque_t, 1);
         objspace->par_mark.array_continue_deques[i].datas = p;
-        objspace->par_mark.array_continue_deques[i].size = GC_DEQUE_ARRAY_CONTINUE_SIZE;
+        objspace->par_mark.array_continue_deques[i].size = GC_ARRAY_CONTINUE_DEQUE_SIZE;
         objspace->par_mark.array_continue_deques[i].type = DEQUE_DATA_ARRAY_CONTINUE;
         objspace->par_mark.array_continue_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_CONTINUE;;
         objspace->par_mark.array_continue_deques[i].overflow_stack.page_size =
@@ -2253,11 +2412,11 @@ par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
     size_t len = RARRAY_LEN(obj);
     VALUE *ptr = RARRAY_PTR(obj);
 
-    if ((index + GC_DEQUE_ARRAY_CONTINUE_STRIDE) >= len) {
+    if ((index + GC_ARRAY_CONTINUE_DEQUE_STRIDE) >= len) {
         end = len;
     }
     else {
-        end = index + GC_DEQUE_ARRAY_CONTINUE_STRIDE;
+        end = index + GC_ARRAY_CONTINUE_DEQUE_STRIDE;
     }
 
     for(; index < end; index++) {
@@ -4665,8 +4824,8 @@ rb_gc_test(void)
               (int)deque->bottom);
 
     printf("par_mark_array_object\n");
-    ary = rb_ary_new2(GC_DEQUE_ARRAY_CONTINUE_STRIDE*2);
-    rb_ary_store(ary, GC_DEQUE_ARRAY_CONTINUE_STRIDE*2-1, Qtrue);
+    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
+    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qtrue);
     par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 0);
     ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[0];
     gc_assert((VALUE)ac.obj == ary, "not eq\n");
@@ -4826,6 +4985,33 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == FALSE, "false?\n");
+
+    printf("push_local_markstack\n");
+    push_local_markstack(objspace, deque, (VALUE)1);
+    gc_assert(deque->local_markstack.list->objs[0] == (VALUE)1, "not 1\n");
+    gc_assert(deque->local_markstack.index == 1, "not 1\n");
+    deque->local_markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
+    push_local_markstack(objspace, deque, (VALUE)2);
+    gc_assert(deque->local_markstack.list->objs[0] == 2, "not 2\n");
+    gc_assert(deque->local_markstack.index == 1, "not 1\n");
+    gc_assert(deque->local_markstack.used == 1, "not 1\n");
+    gc_assert(deque->local_markstack.max_used == 1, "not 1\n");
+
+    printf("pop_local_markstack\n");
+    res = pop_local_markstack(objspace, deque, (VALUE *)&data);
+    gc_assert(res == TRUE, "false\n");
+    gc_assert(data == 2, "not 2\n");
+    gc_assert(deque->local_markstack.index == 0, "not 0\n");
+    res = pop_local_markstack(objspace, deque, (VALUE *)&data);
+    gc_assert(res == TRUE, "false\n");
+    gc_assert(data == 0, "data: %d\n", (VALUE)data);
+    gc_assert(deque->local_markstack.index == GC_PAR_MARKSTACK_OBJS_SIZE-1,
+              "not eq\n");
+    gc_assert(deque->local_markstack.used == 0, "not 0\n");
+    gc_assert(deque->local_markstack.max_used == 1, "not 0\n");
+    deque->local_markstack.index = 0;
+    res = pop_local_markstack(objspace, deque, (VALUE *)&data);
+    gc_assert(res == FALSE, "false\n");
 
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
