@@ -991,6 +991,18 @@ rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
     return wgroup;
 }
 
+void
+rb_par_worker_group_mutex_lock(rb_gc_par_worker_group_t *wgroup)
+{
+    native_mutex_lock(&wgroup->workers_lock);
+}
+
+void
+rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *wgroup)
+{
+    native_mutex_unlock(&wgroup->workers_lock);
+}
+
 int
 rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
 {

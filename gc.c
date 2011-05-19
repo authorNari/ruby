@@ -1651,7 +1651,7 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     par_markstack_t *top, *end;
 
     if (need_lock) {
-        /* TODO: mark threads lock!! */
+        rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
     }
 
     top = end = objspace->par_markstack.global_list;
@@ -1670,7 +1670,7 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     deque->local_markstack.length += size;
 
     if (need_lock) {
-        /* TODO: mark threads lock!! */
+        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
     }
 }
 
@@ -1682,7 +1682,7 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     par_markstack_t *top, *end;
 
     if (need_lock) {
-        /* TODO: mark threads lock!! */
+        rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
     }
 
     top = end = deque->local_markstack.list;
@@ -1697,7 +1697,7 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     deque->local_markstack.length -= size;
 
     if (need_lock) {
-        /* TODO: mark threads lock!! */
+        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
     }
 }
 
