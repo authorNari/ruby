@@ -383,7 +383,7 @@ typedef struct overflow_stack {
 } overflow_stack_t;
 
 
-#define GC_PAR_MARKSTACK_OBJS_SIZE 31
+#define GC_PAR_MARKSTACK_OBJS_SIZE 63
 
 /* 32bit: 128Byte, 64bit: 256Byte */
 typedef struct par_markstack {
