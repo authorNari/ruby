@@ -417,9 +417,9 @@ typedef struct deque {
         par_markstack_t *list;
         size_t index;
         size_t length;
-        size_t used;
-        size_t max_used;
-    } local_markstack;
+        size_t freed;
+        size_t max_freed;
+    } markstack;
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif
@@ -473,7 +473,8 @@ typedef struct rb_objspace {
     struct {
         par_markstack_t *global_list;
         size_t length;
-        size_t used;
+        size_t freed;
+        size_t local_free_min;
     } par_markstack;
     struct {
 	int run;
@@ -1225,6 +1226,7 @@ assign_heap_slot(rb_objspace_t *objspace)
 }
 
 #ifdef PARALLEL_GC_IS_POSSIBLE
+
 static inline size_t
 deque_increment(deque_t *deque, size_t index)
 {
@@ -1625,6 +1627,7 @@ alloc_global_par_markstacks(rb_objspace_t *objspace, size_t size)
         objspace->par_markstack.global_list = p;
     }
     objspace->par_markstack.length += size;
+    objspace->par_markstack.freed += size;
 }
 
 static void
@@ -1639,6 +1642,7 @@ free_global_par_markstacks(rb_objspace_t *objspace, size_t size)
         free(p);
     }
     objspace->par_markstack.length -= size;
+    objspace->par_markstack.freed -= size;
 }
 
 static void
@@ -1654,18 +1658,22 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
 
     top = end = objspace->par_markstack.global_list;
     for (i = 0; i < size; i++) {
-        if (end == NULL) {
+        if (objspace->par_markstack.global_list == NULL) {
             alloc_global_par_markstacks(objspace,
                                         objspace->par_markstack.length);
+            end->next = objspace->par_markstack.global_list;
         }
-        end = end->next;
+        end = objspace->par_markstack.global_list;
+        objspace->par_markstack.global_list =
+            objspace->par_markstack.global_list->next;
     }
 
-    objspace->par_markstack.global_list = end->next;
-    end->next = deque->local_markstack.list;
-    deque->local_markstack.list = top;
-    objspace->par_markstack.used += size;
-    deque->local_markstack.length += size;
+    end->next = deque->markstack.list;
+    deque->markstack.list = top;
+
+    deque->markstack.length += size;
+    deque->markstack.freed += size;
+    objspace->par_markstack.freed -= size;
 
     if (need_lock) {
         rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
@@ -1683,18 +1691,19 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
         rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
     }
 
-    top = end = deque->local_markstack.list;
-    for (i = 0; i < size; i++) {
+    top = end = deque->markstack.list;
+    for (i = 1; i < size; i++) {
         end = end->next;
     }
 
-    deque->local_markstack.list = end->next;
+    deque->markstack.list = end->next;
     end->next = objspace->par_markstack.global_list;
     objspace->par_markstack.global_list = top;
-    objspace->par_markstack.used -= size;
-    deque->local_markstack.length -= size;
+    objspace->par_markstack.freed += size;
+    deque->markstack.length -= size;
+    deque->markstack.freed -= size;
 
-    if (objspace->par_markstack.used < objspace->par_markstack.length/4) {
+    if (objspace->par_markstack.freed > objspace->par_markstack.length * 0.8) {
         free_global_par_markstacks(objspace,
                                    objspace->par_markstack.length/2);
     }
@@ -1708,24 +1717,37 @@ static inline void
 push_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE obj)
 {
     par_markstack_t *m;
+    int i;
 
-    m = deque->local_markstack.list;
-    if (deque->local_markstack.index >= GC_PAR_MARKSTACK_OBJS_SIZE) {
+    m = deque->markstack.list;
+    if (deque->markstack.index >= GC_PAR_MARKSTACK_OBJS_SIZE) {
         push_bottom_with_overflow(objspace, deque, (void *)m);
-        deque->local_markstack.list = m->next;
-        m = deque->local_markstack.list;
-        deque->local_markstack.used++;
-        if (deque->local_markstack.max_used < deque->local_markstack.used) {
-            deque->local_markstack.max_used = deque->local_markstack.used;
+        deque->markstack.list = m->next;
+        m = deque->markstack.list;
+        deque->markstack.freed--;
+        if (deque->markstack.max_freed > deque->markstack.freed) {
+            deque->markstack.max_freed = deque->markstack.freed;
         }
         if (m == NULL) {
             alloc_local_par_markstacks(objspace, deque,
-                                       deque->local_markstack.length, TRUE);
+                                       deque->markstack.length,
+                                       TRUE);
         }
-        deque->local_markstack.index = 0;
+        deque->markstack.index = 0;
+        m = deque->markstack.list;
     }
 
-    m->objs[deque->local_markstack.index++] = obj;
+    m->objs[deque->markstack.index] = obj;
+    deque->markstack.index++;
+}
+
+static inline void
+add_local_markstack(deque_t *deque, par_markstack_t *m)
+{
+    m->next = deque->markstack.list;
+    deque->markstack.list = m;
+    deque->markstack.freed++;
+    deque->markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
 }
 
 static inline int
@@ -1733,18 +1755,15 @@ pop_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE *obj)
 {
     par_markstack_t *m;
 
-    m = deque->local_markstack.list;
-    if (deque->local_markstack.index == 0) {
+    m = deque->markstack.list;
+    if (deque->markstack.index == 0) {
         if (!pop_bottom_with_get_back(objspace, deque, (void **)&m)) {
             return FALSE;
         }
-        m->next = deque->local_markstack.list;
-        deque->local_markstack.list = m;
-        deque->local_markstack.used--;
-        deque->local_markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
+        add_local_markstack(deque, m);
     }
 
-    *obj = m->objs[--deque->local_markstack.index];
+    *obj = m->objs[--deque->markstack.index];
     return TRUE;
 }
 
@@ -1771,6 +1790,8 @@ init_par_mark(rb_objspace_t *objspace)
     objspace->par_mark.deques = (deque_t *)p;
     MEMZERO((void*)p, deque_t, num_workers);
 
+    objspace->par_markstack.local_free_min =
+        GC_INIT_PAR_MARKSTACK_SIZE / 2 / num_workers;
     for (i = 0; i < num_workers; i++) {
         p = malloc(GC_MSTACK_PTR_DEQUE_SIZE * sizeof(VALUE));
         if (!p) {
@@ -1785,7 +1806,7 @@ init_par_mark(rb_objspace_t *objspace)
         objspace->par_mark.deques[i].overflow_stack.page_index = PAGE_DATAS_SIZE;
 
         alloc_local_par_markstacks(objspace, &objspace->par_mark.deques[i],
-                                   GC_INIT_PAR_MARKSTACK_SIZE / 2 /num_workers,
+                                   objspace->par_markstack.local_free_min,
                                    FALSE);
     }
 
@@ -2494,7 +2515,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
 #ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
-        push_bottom_with_overflow(objspace, w->local_deque, (void *)obj);
+        push_local_markstack(objspace, w->local_deque, (VALUE)obj);
     }
 #endif
 }
@@ -3328,7 +3349,8 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->par_mark.deques[i].bottom = 0;
             objspace->par_mark.deques[i].age.data = 0;
-            objspace->par_mark.deques[i].local_markstack.max_used = 0;
+            objspace->par_mark.deques[i].markstack.max_freed =
+                objspace->par_mark.deques[i].markstack.freed;
             objspace->par_mark.array_continue_deques[i].bottom = 0;
             objspace->par_mark.array_continue_deques[i].age.data = 0;
             objspace->par_mark.worker_group->workers[i].current_thread = th;
@@ -3341,6 +3363,8 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
             objspace->heap.live_num +=
                 objspace->par_mark.worker_group->workers[i].marked_objects;
             objspace->par_mark.worker_group->workers[i].marked_objects = 0;
+            objspace->par_mark.deques[i].markstack.length =
+                objspace->par_mark.deques[i].markstack.freed;
         }
     }
 }
@@ -3348,13 +3372,13 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
 static void
 gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 {
-    RVALUE *p;
+    VALUE p;
     array_continue_t *ac;
     int deque_empty = FALSE;
 
     do {
-        while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
-            gc_mark_children(objspace, (VALUE)p, 0, worker);
+        while(pop_local_markstack(objspace, worker->local_deque, (VALUE *)&p)) {
+            gc_mark_children(objspace, p, 0, worker);
         }
 
         while(pop_bottom_with_get_back(objspace, worker->local_array_conts, (void **)&ac)) {
@@ -3366,9 +3390,11 @@ gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
     } while (!deque_empty);
 }
 
+
 static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
+    par_markstack_t *m;
     RVALUE *p;
     array_continue_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
@@ -3383,16 +3409,18 @@ steal_mark_task(rb_gc_par_worker_t *worker)
         }
 
         while (steal(objspace, objspace->par_mark.deques,
-                     worker->index, (void **)&p)) {
-            gc_mark_children(objspace, (VALUE)p, 0, worker);
+                     worker->index, (void **)&m)) {
+            add_local_markstack(worker->local_deque, m);
             gc_follow_marking_deques(objspace, worker);
         }
     } while (!rb_par_steal_task_offer_termination(worker->group));
 
-    if (worker->local_deque->local_markstack.max_used < 
-        (worker->local_deque->local_markstack.length / 4)) {
+    if (worker->local_deque->markstack.max_freed >
+        objspace->par_markstack.local_free_min
+        && worker->local_deque->markstack.max_freed >
+        (worker->local_deque->markstack.freed * 0.8)) {
         free_local_par_markstacks(objspace, worker->local_deque,
-                                  worker->local_deque->local_markstack.length / 2,
+                                  worker->local_deque->markstack.freed / 2,
                                   TRUE);
     }
 }
@@ -3548,8 +3576,10 @@ gc_marks(rb_objspace_t *objspace)
     tasks[tasks_length++] = global_tbl_mark_task;
     tasks[tasks_length++] = class_tbl_mark_task;
     tasks[tasks_length++] = ivar_tbl_mark_task;
-    for (i = 0; i < objspace->par_mark.num_workers; i++) {
-        tasks[tasks_length++] = steal_mark_task;
+    if (objspace->par_mark.num_workers > 1) {
+        for (i = 0; i < objspace->par_mark.num_workers; i++) {
+            tasks[tasks_length++] = steal_mark_task;
+        }
     }
     gc_run_tasks(objspace, th, regs.v, tasks, tasks_length);
 
