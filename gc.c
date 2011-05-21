@@ -261,8 +261,6 @@ gettimeofday_time(void)
 #define GC_PROF_DEC_LIVE_NUM
 #endif
 
-#define DEQUE_STATS 0
-
 #if DEQUE_STATS
 enum deque_stat_type {
     PUSH,
@@ -4878,58 +4876,6 @@ rb_gc_test(void)
     gc_assert((VALUE)res_ac->obj == ary, "ac.ary = %p\n", res_ac->obj);
     gc_assert(res_ac->index == 512, "ac.index = %d\n", (int)res_ac->index);
 
-    printf("steal. use randome, so lack of stability test case.\n");
-    tmp_num_workers = objspace->par_mark.num_workers;
-    objspace->par_mark.num_workers = 4;
-    deque->bottom = 0;
-    deque->age.data = 0;
-    push_bottom(&objspace->par_mark.deques[1], (void *)11);
-    push_bottom(&objspace->par_mark.deques[1], (void *)12);
-    push_bottom(&objspace->par_mark.deques[1], (void *)13);
-    push_bottom(&objspace->par_mark.deques[2], (void *)21);
-    push_bottom(&objspace->par_mark.deques[2], (void *)22);
-    push_bottom(&objspace->par_mark.deques[3], (void *)31);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == 0, "res: %d\n", (int)res);
-    objspace->par_mark.num_workers = tmp_num_workers;
-
-    push_bottom(&objspace->par_mark.deques[0], (void *)1);
-    tmp_num_workers = objspace->par_mark.num_workers;
-    objspace->par_mark.num_workers = 2;
-    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert(data == 1, "data: %d\n", (int)data);
-    push_bottom(&objspace->par_mark.deques[1], (void *)11);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
-    gc_assert(res == 0, "res: %d\n", (int)res);
-    objspace->par_mark.num_workers = tmp_num_workers;
-
-    res = steal(objspace, objspace->par_mark.array_continue_deques,
-                1, (void **)&res_ac);
-    gc_assert(res == TRUE, "res: %d\n", (int)res);
-    gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
-    gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
-
     printf("push_overflow_stack\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
@@ -4983,6 +4929,74 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
+    {
+        par_markstack_t *tmp;
+        int diff;
+
+        printf("alloc_global_par_markstacks\n");
+        diff = objspace->par_markstack.freed;
+        alloc_global_par_markstacks(objspace, 10);
+        i = 0;
+        tmp = objspace->par_markstack.global_list;
+        while (tmp != NULL) {
+            tmp = tmp->next;
+            i++;
+        }
+        diff = objspace->par_markstack.freed - diff;
+        gc_assert(10 == diff, "diff(%d)\n", diff);
+    }
+
+    {
+        par_markstack_t *tmp;
+        int diff;
+
+        printf("free_global_par_markstacks\n");
+        diff = objspace->par_markstack.freed;
+        free_global_par_markstacks(objspace, 10);
+        i = 0;
+        tmp = objspace->par_markstack.global_list;
+        while (tmp != NULL) {
+            tmp = tmp->next;
+            i++;
+        }
+        diff = objspace->par_markstack.freed - diff;
+        gc_assert(-10 == diff, "diff(%d)\n", diff);
+    }
+
+    {
+        par_markstack_t *tmp;
+        int diff;
+
+        printf("alloc_local_par_markstacks\n");
+        diff = objspace->par_markstack.freed;
+        alloc_local_par_markstacks(objspace, deque, 10, FALSE);
+        i = 0;
+        tmp = objspace->par_markstack.global_list;
+        while (tmp != NULL) {
+            tmp = tmp->next;
+            i++;
+        }
+        diff = diff - i;
+        gc_assert(10 == diff, "diff(%d)\n", diff);
+    }
+
+    {
+        par_markstack_t *tmp;
+        int diff;
+
+        printf("free_local_par_markstacks\n");
+        diff = objspace->par_markstack.freed;
+        free_local_par_markstacks(objspace, deque, 10, FALSE);
+        i = 0;
+        tmp = objspace->par_markstack.global_list;
+        while (tmp != NULL) {
+            tmp = tmp->next;
+            i++;
+        }
+        diff = diff - i;
+        gc_assert(-10 == diff, "diff(%d)\n", diff);
+    }
+
     printf("pop_bottom_with_get_back\n");
     push_bottom(deque, (void *)1);
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
@@ -5000,31 +5014,40 @@ rb_gc_test(void)
     gc_assert(res == FALSE, "false?\n");
 
     printf("push_local_markstack\n");
+    deque->markstack.max_freed = deque->markstack.freed;
     push_local_markstack(objspace, deque, (VALUE)1);
-    gc_assert(deque->local_markstack.list->objs[0] == (VALUE)1, "not 1\n");
-    gc_assert(deque->local_markstack.index == 1, "not 1\n");
-    deque->local_markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
+    gc_assert(deque->markstack.list->objs[0] == (VALUE)1, "not 1\n");
+    gc_assert(deque->markstack.index == 1, "not 1\n");
+    deque->markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
     push_local_markstack(objspace, deque, (VALUE)2);
-    gc_assert(deque->local_markstack.list->objs[0] == 2, "not 2\n");
-    gc_assert(deque->local_markstack.index == 1, "not 1\n");
-    gc_assert(deque->local_markstack.used == 1, "not 1\n");
-    gc_assert(deque->local_markstack.max_used == 1, "not 1\n");
+    gc_assert(deque->markstack.list->objs[0] == 2, "not 2\n");
+    gc_assert(deque->markstack.index == 1, "not 1\n");
+    gc_assert(deque->markstack.freed == objspace->par_markstack.local_free_min-1,
+              "%d\n", (int)deque->markstack.freed);
+    gc_assert(deque->markstack.max_freed == deque->markstack.freed,
+              "%d == %d\n", (int)deque->markstack.max_freed,
+              (int)deque->markstack.freed);
+    gc_assert(deque->markstack.length == objspace->par_markstack.local_free_min,
+              "%d\n", (int)deque->markstack.length);
 
     printf("pop_local_markstack\n");
     res = pop_local_markstack(objspace, deque, (VALUE *)&data);
     gc_assert(res == TRUE, "false\n");
     gc_assert(data == 2, "not 2\n");
-    gc_assert(deque->local_markstack.index == 0, "not 0\n");
+    gc_assert(deque->markstack.index == 0, "not 0\n");
     res = pop_local_markstack(objspace, deque, (VALUE *)&data);
     gc_assert(res == TRUE, "false\n");
-    gc_assert(data == 0, "data: %d\n", (VALUE)data);
-    gc_assert(deque->local_markstack.index == GC_PAR_MARKSTACK_OBJS_SIZE-1,
+    gc_assert(data == 0, "data: %d\n", (int)data);
+    gc_assert(deque->markstack.index == GC_PAR_MARKSTACK_OBJS_SIZE-1,
               "not eq\n");
-    gc_assert(deque->local_markstack.used == 0, "not 0\n");
-    gc_assert(deque->local_markstack.max_used == 1, "not 0\n");
-    deque->local_markstack.index = 0;
+    gc_assert(deque->markstack.max_freed == deque->markstack.length-1, "not eq\n");
+    deque->markstack.index = 0;
     res = pop_local_markstack(objspace, deque, (VALUE *)&data);
     gc_assert(res == FALSE, "false\n");
+    gc_assert(deque->markstack.freed == objspace->par_markstack.local_free_min,
+              "%d\n", (int)deque->markstack.freed);
+    gc_assert(deque->markstack.length == objspace->par_markstack.local_free_min,
+              "%d\n", (int)deque->markstack.length);
 
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
@@ -5040,6 +5063,58 @@ rb_gc_test(void)
     tasks[1] = gc_par_print_test;
     tasks[2] = gc_par_print_test;
     rb_gc_par_worker_group_run_tasks(worker->group, tasks, 3);
+
+    printf("steal. use randome, so lack of stability test case.\n");
+    tmp_num_workers = objspace->par_mark.num_workers;
+    objspace->par_mark.num_workers = 4;
+    deque->bottom = 0;
+    deque->age.data = 0;
+    push_bottom(&objspace->par_mark.deques[1], (void *)11);
+    push_bottom(&objspace->par_mark.deques[1], (void *)12);
+    push_bottom(&objspace->par_mark.deques[1], (void *)13);
+    push_bottom(&objspace->par_mark.deques[2], (void *)21);
+    push_bottom(&objspace->par_mark.deques[2], (void *)22);
+    push_bottom(&objspace->par_mark.deques[3], (void *)31);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data != 0, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == 0, "res: %d\n", (int)res);
+    objspace->par_mark.num_workers = tmp_num_workers;
+
+    push_bottom(&objspace->par_mark.deques[0], (void *)1);
+    tmp_num_workers = objspace->par_mark.num_workers;
+    objspace->par_mark.num_workers = 2;
+    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert(data == 1, "data: %d\n", (int)data);
+    push_bottom(&objspace->par_mark.deques[1], (void *)11);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(data == 11, "data: %d\n", (int)data);
+    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    gc_assert(res == 0, "res: %d\n", (int)res);
+    objspace->par_mark.num_workers = tmp_num_workers;
+
+    res = steal(objspace, objspace->par_mark.array_continue_deques,
+                1, (void **)&res_ac);
+    gc_assert(res == TRUE, "res: %d\n", (int)res);
+    gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
+    gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
 
     return Qnil;
 }
