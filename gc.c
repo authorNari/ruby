@@ -62,7 +62,7 @@ PRINTF_ARGS(void ruby_debug_printf(const char*, ...), 1, 2);
 }while(0)
 #define gc_debug ruby_debug_printf
 #else
-#define gc_debug
+#define gc_debug(format, ...)
 #define gc_assert(expect, format, ...)
 #endif
 
@@ -1370,7 +1370,7 @@ static int
 pop_bottom(deque_t *deque, void **data)
 {
     union deque_age old_age, new_age, res_age;
-    size_t local_bottom, size;
+    size_t local_bottom;
 
     old_age = deque->age;
     local_bottom = deque->bottom;
@@ -1717,7 +1717,6 @@ static inline void
 push_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE obj)
 {
     par_markstack_t *m;
-    int i;
 
     m = deque->markstack.list;
     if (deque->markstack.index >= GC_PAR_MARKSTACK_OBJS_SIZE) {
@@ -1857,7 +1856,7 @@ static int
 steal(rb_objspace_t *objspace, deque_t *deques,
       size_t deque_index, void **data)
 {
-    size_t c1, c2, sz1, sz2, res_size = 0, tmp_size = 0, i = 0;
+    size_t c1, c2, sz1, sz2, i = 0;
     VALUE randgen = rb_cRandom;
 
     if (objspace->par_mark.num_workers > 2) {
@@ -3395,7 +3394,6 @@ static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
     par_markstack_t *m;
-    RVALUE *p;
     array_continue_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
 
