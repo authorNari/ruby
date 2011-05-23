@@ -792,12 +792,6 @@ native_thread_create(rb_thread_t *th)
     return err;
 }
 
-struct work_data {
-    size_t seq_number;
-    int terminate;
-    void (*task) (struct rb_gc_par_worker_struct *worker);
-};
-
 #define FGLOCK(lock, body) do { \
     native_mutex_lock(lock); \
     { \
@@ -805,6 +799,15 @@ struct work_data {
     } \
     native_mutex_unlock(lock); \
 } while (0)
+
+
+#ifdef PARALLEL_GC_IS_POSSIBLE
+
+struct work_data {
+    size_t seq_number;
+    int terminate;
+    void (*task) (struct rb_gc_par_worker_struct *worker);
+};
 
 static void
 fetch_worker_group_data(struct work_data *data, rb_gc_par_worker_group_t *wgroup)
@@ -1071,6 +1074,8 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
         }
     }
 }
+
+#endif /* PARALLEL_GC_IS_POSSIBLE */
 
 static void
 native_thread_join(pthread_t th)
