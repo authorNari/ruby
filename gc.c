@@ -3130,10 +3130,14 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 {
     RVALUE *p, *pend;
     RVALUE *final_list = 0;
-    size_t i;
+    size_t i, tmp_num_workers;
 
     /* run finalizers */
     gc_clear_mark_on_sweep_slots(objspace);
+
+    /* to serial work */
+    tmp_num_workers = objspace->par_mark.num_workers;
+    objspace->par_mark.num_workers = 0;
 
     do {
 	/* XXX: this loop will make no sense */
@@ -3143,6 +3147,9 @@ rb_objspace_call_finalizer(rb_objspace_t *objspace)
 	st_foreach(finalizer_table, chain_finalized_object,
 		   (st_data_t)&deferred_final_list);
     } while (deferred_final_list);
+
+    objspace->par_mark.num_workers = tmp_num_workers;
+
     /* force to run finalizer */
     while (finalizer_table->num_entries) {
 	struct force_finalize_list *list = 0;
