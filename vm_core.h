@@ -491,9 +491,9 @@ typedef struct rb_gc_par_worker_group_struct {
     size_t num_workers;
     struct rb_gc_par_worker_struct *workers;
     rb_thread_lock_t workers_lock;
-    pthread_cond_t workers_wait_cond;
+    rb_thread_cond_t workers_wait_cond;
     rb_thread_lock_t owner_lock;
-    pthread_cond_t owner_wait_cond;
+    rb_thread_cond_t owner_wait_cond;
     void (**tasks) (struct rb_gc_par_worker_struct *worker);
     size_t tasks_length;
     size_t do_index;

@@ -981,8 +981,8 @@ rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
     wgroup->workers = workers;
     native_mutex_initialize(&wgroup->owner_lock);
     native_mutex_initialize(&wgroup->workers_lock);
-    native_cond_initialize(&wgroup->owner_wait_cond);
-    native_cond_initialize(&wgroup->workers_wait_cond);
+    native_cond_initialize(&wgroup->owner_wait_cond, 0);
+    native_cond_initialize(&wgroup->workers_wait_cond, 0);
 
     for (i = 0; i < num; i++) {
         workers[i].index = i;
@@ -1057,7 +1057,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
                 ts.tv_sec = tvn.tv_sec;
                 ts.tv_nsec = (tvn.tv_usec + 1000) * 1000;
                 FGLOCK(&wgroup->owner_lock, {
-                    pthread_cond_timedwait(&wgroup->workers_wait_cond,
+                    native_cond_timedwait(&wgroup->workers_wait_cond,
 					   &wgroup->owner_lock, &ts);
                 });
             }
