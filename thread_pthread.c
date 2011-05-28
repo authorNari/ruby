@@ -959,16 +959,66 @@ gc_par_worker_thread_create(rb_gc_par_worker_t *worker)
     CHECK_ERR(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
 
     err = pthread_create(&worker->thread_id, &attr, gc_par_worker_thread_start, worker);
-    thread_debug("create: %p (%d)\n", (void *)worker, err);
+    thread_debug("create worker thread: %p (%d) pid(%d)\n", (void *)worker, err, getpid());
     CHECK_ERR(pthread_attr_destroy(&attr));
 
     return err;
 }
 
+static int
+gc_par_worker_group_init(rb_gc_par_worker_group_t *wgroup)
+{
+    size_t i;
+    rb_gc_par_worker_t *workers;
+
+    native_mutex_initialize(&wgroup->owner_lock);
+    native_mutex_initialize(&wgroup->workers_lock);
+    native_cond_initialize(&wgroup->owner_wait_cond, 0);
+    native_cond_initialize(&wgroup->workers_wait_cond, 0);
+
+    workers = wgroup->workers;
+    for (i = 0; i < wgroup->num_workers; i++) {
+        workers[i].index = i;
+        workers[i].group = wgroup;
+        if (gc_par_worker_thread_create(&workers[i])) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static void
+gc_par_worker_group_atfork_prepare(void)
+{
+    rb_vm_t *vm = GET_VM();
+
+    native_mutex_lock(&vm->worker_group->owner_lock);
+    native_mutex_lock(&vm->worker_group->workers_lock);
+}
+
+static void
+gc_par_worker_group_atfork_parent(void)
+{
+    rb_vm_t *vm = GET_VM();
+
+    native_mutex_unlock(&vm->worker_group->owner_lock);
+    native_mutex_unlock(&vm->worker_group->workers_lock);
+}
+
+static void
+gc_par_worker_group_atfork_child(void)
+{
+    rb_vm_t *vm = GET_VM();
+
+    if (!gc_par_worker_group_init(vm->worker_group)) {
+        fprintf(stderr, "[FATAL] gc par worker thread create fail.\n");
+        exit(1);
+    }
+}
+
 rb_gc_par_worker_group_t *
 rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
 {
-    size_t i;
     rb_gc_par_worker_group_t *wgroup;
 
     wgroup = (rb_gc_par_worker_group_t *)malloc(sizeof(rb_gc_par_worker_group_t));
@@ -979,18 +1029,13 @@ rb_gc_par_worker_group_create(size_t num, rb_gc_par_worker_t *workers)
 
     wgroup->num_workers = num;
     wgroup->workers = workers;
-    native_mutex_initialize(&wgroup->owner_lock);
-    native_mutex_initialize(&wgroup->workers_lock);
-    native_cond_initialize(&wgroup->owner_wait_cond, 0);
-    native_cond_initialize(&wgroup->workers_wait_cond, 0);
-
-    for (i = 0; i < num; i++) {
-        workers[i].index = i;
-        workers[i].group = wgroup;
-        if (gc_par_worker_thread_create(&workers[i])) {
-            return NULL;
-        }
+    if (!gc_par_worker_group_init(wgroup)) {
+        return NULL;
     }
+
+    pthread_atfork(gc_par_worker_group_atfork_prepare,
+                   gc_par_worker_group_atfork_parent,
+                   gc_par_worker_group_atfork_child);
     return wgroup;
 }
 

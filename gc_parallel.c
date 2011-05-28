@@ -444,9 +444,10 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
 {
     size_t i;
     par_markstack_t *top, *end;
+    rb_vm_t *vm = GET_VM();
 
     if (need_lock) {
-        rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
+        rb_par_worker_group_mutex_lock(vm->worker_group);
     }
 
     top = end = objspace->par_markstack.global_list;
@@ -469,7 +470,7 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     objspace->par_markstack.freed -= size;
 
     if (need_lock) {
-        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
+        rb_par_worker_group_mutex_unlock(vm->worker_group);
     }
 }
 
@@ -479,9 +480,10 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
 {
     size_t i;
     par_markstack_t *top, *end;
+    rb_vm_t *vm = GET_VM();
 
     if (need_lock) {
-        rb_par_worker_group_mutex_lock(objspace->par_mark.worker_group);
+        rb_par_worker_group_mutex_lock(vm->worker_group);
     }
 
     top = end = deque->markstack.list;
@@ -502,7 +504,7 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     }
 
     if (need_lock) {
-        rb_par_worker_group_mutex_unlock(objspace->par_mark.worker_group);
+        rb_par_worker_group_mutex_unlock(vm->worker_group);
     }
 }
 
@@ -601,6 +603,7 @@ init_par_mark(rb_objspace_t *objspace)
     size_t i;
     rb_gc_par_worker_t *workers;
     size_t num_workers;
+    rb_vm_t *vm = GET_VM();
 
     objspace->par_mark.num_workers = num_workers = initial_par_gc_threads;
     if (num_workers < 1) {
@@ -673,9 +676,8 @@ init_par_mark(rb_objspace_t *objspace)
         workers[i].index = i;
     }
 
-    objspace->par_mark.worker_group =
-        rb_gc_par_worker_group_create(num_workers, workers);
-    if (!objspace->par_mark.worker_group) {
+    vm->worker_group = rb_gc_par_worker_group_create(num_workers, workers);
+    if (!vm->worker_group) {
         return rb_memerror();
     }
 }
@@ -772,6 +774,8 @@ steal_mark_task(rb_gc_par_worker_t *worker)
 
 #ifdef GC_DEBUG
 
+static rb_gc_par_worker_t* current_gc_worker(void);
+
 void
 gc_par_print_test(rb_gc_par_worker_t *worker)
 {
@@ -789,7 +793,7 @@ rb_gc_test(void)
     array_continue_t ac;
     array_continue_t *res_ac;
     rb_gc_par_worker_t *worker;
-    rb_gc_par_worker_t *workers = objspace->par_mark.worker_group->workers;
+    rb_gc_par_worker_t *workers = GET_VM()->worker_group->workers;
     void (*tasks[10]) (rb_gc_par_worker_t *worker);
 
     objspace->par_mark.deques[1].bottom = 0;

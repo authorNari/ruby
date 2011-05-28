@@ -217,7 +217,6 @@ typedef struct rb_objspace {
     } markstack;
     struct {
         size_t num_workers;
-        rb_gc_par_worker_group_t *worker_group;
         deque_t *deques;
         deque_t *array_continue_deques;
     } par_mark;
@@ -379,7 +378,8 @@ rb_objspace_free(rb_objspace_t *objspace)
     }
 #ifdef PARALLEL_GC_IS_POSSIBLE
     if (!is_serial_working(objspace)) {
-        rb_gc_par_worker_group_stop(objspace->par_mark.worker_group);
+        rb_vm_t *vm = GET_VM();
+        rb_gc_par_worker_group_stop(vm->worker_group);
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             free_stack_pages(&objspace->par_mark.deques[i].overflow_stack);
             free(objspace->par_mark.deques[i].datas);
@@ -2408,6 +2408,8 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
     }
 #ifdef PARALLEL_GC_IS_POSSIBLE
     else {
+        rb_vm_t *vm = GET_VM();
+
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->par_mark.deques[i].bottom = 0;
             objspace->par_mark.deques[i].age.data = 0;
@@ -2415,16 +2417,16 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
                 objspace->par_mark.deques[i].markstack.freed;
             objspace->par_mark.array_continue_deques[i].bottom = 0;
             objspace->par_mark.array_continue_deques[i].age.data = 0;
-            objspace->par_mark.worker_group->workers[i].current_thread = th;
-            objspace->par_mark.worker_group->workers[i].regs_gc_mark = regs;
+            vm->worker_group->workers[i].current_thread = th;
+            vm->worker_group->workers[i].regs_gc_mark = regs;
         }
-        rb_gc_par_worker_group_run_tasks(objspace->par_mark.worker_group,
+        rb_gc_par_worker_group_run_tasks(vm->worker_group,
                                          tasks, tasks_length);
 
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->heap.live_num +=
-                objspace->par_mark.worker_group->workers[i].marked_objects;
-            objspace->par_mark.worker_group->workers[i].marked_objects = 0;
+                vm->worker_group->workers[i].marked_objects;
+            vm->worker_group->workers[i].marked_objects = 0;
             objspace->par_mark.deques[i].markstack.length =
                 objspace->par_mark.deques[i].markstack.freed;
         }

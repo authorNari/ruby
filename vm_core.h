@@ -320,6 +320,11 @@ typedef struct rb_vm_struct {
     struct rb_objspace *objspace;
 #endif
 
+#if defined(HAVE_PTHREAD_H)
+    /* parallel gc */
+    struct rb_gc_par_worker_group_struct *worker_group;
+#endif
+
     /*
      * @shyouhei notes that this is not for storing normal Ruby
      * objects so do *NOT* mark this when you GC.
