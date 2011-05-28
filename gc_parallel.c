@@ -566,16 +566,15 @@ steal(rb_objspace_t *objspace, deque_t *deques,
       size_t deque_index, void **data)
 {
     size_t c1, c2, sz1, sz2, i = 0;
-    VALUE randgen = rb_cRandom;
 
     if (objspace->par_mark.num_workers > 2) {
         c1 = deque_index;
         while (c1 == deque_index) {
-            c1 = rb_random_real(randgen) * objspace->par_mark.num_workers;
+            c1 = rand() % objspace->par_mark.num_workers;
         }
         c2 = deque_index;
         while (c2 == deque_index) {
-            c2 = rb_random_real(randgen) * objspace->par_mark.num_workers;
+            c2 = rand() % objspace->par_mark.num_workers;
         }
         sz1 = size_deque(&deques[c1], deques[c1].bottom, deques[c1].age.fields.top);
         sz2 = size_deque(&deques[c2], deques[c2].bottom, deques[c2].age.fields.top);
@@ -1220,6 +1219,7 @@ rb_gc_test(void)
     gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
     gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
 
+    printf("all test passed\n");
     return Qnil;
 }
 
