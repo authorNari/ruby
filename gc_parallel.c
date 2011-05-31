@@ -746,8 +746,6 @@ steal_mark_task(rb_gc_par_worker_t *worker)
     rb_objspace_t *objspace = &rb_objspace;
 
     do {
-        gc_debug("try steal_mark_task(%d)\n", (int)worker->index);
-
         while (steal(objspace, objspace->par_mark.array_continue_deques,
                      worker->index, (void **)&ac)) {
             par_mark_array_object(objspace, worker, ac->obj, ac->index);
