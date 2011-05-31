@@ -116,7 +116,9 @@ deque_datas_store(deque_t *deque, size_t index, void *data)
         ((array_continue_t *)deque->datas)[index] = *((array_continue_t *)data);
 	break;
     default:
-        rb_bug("deque_datas_store(): unknown type %d\n", (int)deque->type);
+        fprintf(stderr, "[FATAL] deque_datas_store(): unknown type %d\n",
+                (int)deque->type);
+        rb_memerror();
     }
 }
 
@@ -129,7 +131,9 @@ deque_datas_entry(deque_t *deque, size_t index)
     case DEQUE_DATA_ARRAY_CONTINUE:
         return (void *)(&((array_continue_t *)deque->datas)[index]);
     default:
-        rb_bug("deque_datas_entry(): unknown type %d\n", deque->type);
+        fprintf(stderr, "[FATAL] deque_datas_entry(): unknown type %d\n",
+                (int)deque->type);
+        rb_memerror();
     }
 }
 
@@ -219,7 +223,7 @@ stack_page_alloc(void)
     gc_assert(sizeof(stack_page_t) == (4 * 1024 * 1024 - SIZEOF_VOIDP),
               "stack_page size is not 4KB. %d bytes.\n", (int)(sizeof(stack_page_t) - SIZEOF_VOIDP));
     if (!res)
-        rb_bug("stack_page malloc miss.");
+        rb_memerror();
 
     return res;
 }
@@ -306,7 +310,9 @@ stack_page_datas_store(overflow_stack_t *stack, size_t index, void *data)
         ((array_continue_t *)stack->page->datas)[index] = *((array_continue_t *)data);
 	break;
     default:
-        rb_bug("stack_page_datas_store(): unknown type %d\n", stack->type);
+        fprintf(stderr, "[FATAL] stack_page_datas_store(): unknown type %d\n",
+                (int)stack->type);
+        rb_memerror();
     }
 }
 
@@ -319,7 +325,9 @@ stack_page_datas_entry(overflow_stack_t *stack, size_t index)
     case DEQUE_DATA_ARRAY_CONTINUE:
         return (void *)(&((array_continue_t *)stack->page->datas)[index]);
     default:
-        rb_bug("stack_page_datas_entry(): unknown type %d\n", stack->type);
+        fprintf(stderr, "[FATAL] stack_page_datas_entry(): unknown type %d\n",
+                (int)stack->type);
+        rb_memerror();
     }
 }
 
