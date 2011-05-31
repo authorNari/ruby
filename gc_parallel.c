@@ -432,6 +432,7 @@ free_global_par_markstacks(rb_objspace_t *objspace, size_t size)
     for (i = 0; i < size; i++) {
         p = objspace->par_markstack.global_list;
         objspace->par_markstack.global_list = p->next;
+        gc_assert(p != NULL, "objspace->par_markstack.global_list is small.\n");
         free(p);
     }
     objspace->par_markstack.length -= size;
@@ -455,7 +456,6 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
         if (objspace->par_markstack.global_list == NULL) {
             alloc_global_par_markstacks(objspace,
                                         objspace->par_markstack.length);
-            end->next = objspace->par_markstack.global_list;
         }
         end = objspace->par_markstack.global_list;
         objspace->par_markstack.global_list =
