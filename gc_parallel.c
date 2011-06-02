@@ -524,14 +524,14 @@ push_local_markstack(rb_objspace_t *objspace, deque_t *deque, VALUE obj)
 
     m = deque->markstack.list;
     if (deque->markstack.index >= GC_PAR_MARKSTACK_OBJS_SIZE) {
-        push_bottom_with_overflow(objspace, deque, (void *)m);
         deque->markstack.list = m->next;
-        m = deque->markstack.list;
+        m->next = NULL;
         deque->markstack.freed--;
+        push_bottom_with_overflow(objspace, deque, (void *)m);
         if (deque->markstack.max_freed > deque->markstack.freed) {
             deque->markstack.max_freed = deque->markstack.freed;
         }
-        if (m == NULL) {
+        if (deque->markstack.list == NULL) {
             alloc_local_par_markstacks(objspace, deque,
                                        deque->markstack.length,
                                        TRUE);
