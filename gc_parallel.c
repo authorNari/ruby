@@ -464,6 +464,7 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
         if (objspace->par_markstack.global_list == NULL) {
             alloc_global_par_markstacks(objspace,
                                         objspace->par_markstack.length);
+            end->next = objspace->par_markstack.global_list;
         }
         end = objspace->par_markstack.global_list;
         objspace->par_markstack.global_list =
