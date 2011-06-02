@@ -550,6 +550,7 @@ add_local_markstack(deque_t *deque, par_markstack_t *m)
     m->next = deque->markstack.list;
     deque->markstack.list = m;
     deque->markstack.freed++;
+    deque->markstack.length++;
     deque->markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
 }
 
