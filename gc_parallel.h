@@ -1,6 +1,8 @@
 #ifndef RUBY_GC_PARALLEL_H
 #define RUBY_GC_PARALLEL_H
 
+#define DEQUE_STATS 0
+
 #if DEQUE_STATS
 enum deque_stat_type {
     PUSH,
