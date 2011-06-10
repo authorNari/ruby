@@ -463,6 +463,11 @@ alloc_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
     }
 
     top = end = objspace->par_markstack.global_list;
+    if (top == NULL) {
+        alloc_global_par_markstacks(objspace,
+                                    objspace->par_markstack.length);
+        top = end = objspace->par_markstack.global_list;
+    }
     for (i = 0; i < size; i++) {
         if (objspace->par_markstack.global_list == NULL) {
             alloc_global_par_markstacks(objspace,
