@@ -65,6 +65,9 @@ static inline int
 is_empty_deque(deque_t *deque, size_t bottom, size_t top)
 {
     if (size_deque(deque, bottom, top) == 0) {
+        if (deque->type == DEQUE_DATA_MARKSTACK_PTR && deque->markstack.index > 0) {
+            return FALSE;
+        }
         return TRUE;
     }
     return FALSE;
@@ -905,6 +908,16 @@ rb_gc_test(void)
     deque->bottom = 1;
     res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
     gc_assert(res == FALSE, "res %d\n", (int)res);
+
+    deque->age.fields.top = 0;
+    deque->bottom = 0;
+    push_local_markstack(objspace, deque, (VALUE)2);
+    res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
+    gc_assert(res == FALSE, "res %d\n", (int)res);
+
+    pop_local_markstack(objspace, deque, (VALUE *)&data);
+    res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
+    gc_assert(res == TRUE, "res %d\n", (int)res);
 
     printf("order_access_memory_barrier\n");
     order_access_memory_barrier();
