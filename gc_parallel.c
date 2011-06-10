@@ -558,7 +558,6 @@ add_local_markstack(deque_t *deque, par_markstack_t *m)
     m->next = deque->markstack.list;
     deque->markstack.list = m;
     deque->markstack.freed++;
-    deque->markstack.length++;
     deque->markstack.index = GC_PAR_MARKSTACK_OBJS_SIZE;
 }
 
@@ -1169,7 +1168,9 @@ rb_gc_test(void)
     gc_assert(data == 0, "data: %d\n", (int)data);
     gc_assert(deque->markstack.index == GC_PAR_MARKSTACK_OBJS_SIZE-1,
               "not eq\n");
-    gc_assert(deque->markstack.max_freed == deque->markstack.length-1, "not eq\n");
+    gc_assert(deque->markstack.max_freed == deque->markstack.length-1,
+              "%d != %d\n",
+              (int)deque->markstack.max_freed, (int)deque->markstack.length-1);
     deque->markstack.index = 0;
     res = pop_local_markstack(objspace, deque, (VALUE *)&data);
     gc_assert(res == FALSE, "false\n");
