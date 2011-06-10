@@ -75,11 +75,11 @@ typedef struct par_markstack {
 } par_markstack_t;
 
 #ifndef __LP64__
-#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 8)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 14)
 #define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 12)
 #define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 * 2 / sizeof(par_markstack_t))
 #else
-#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 11)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 17)
 #define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 13)
 #define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 / sizeof(par_markstack_t))
 #endif
