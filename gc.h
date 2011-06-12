@@ -12,10 +12,10 @@ NOINLINE(void rb_gc_set_stack_end(VALUE **stack_end_p));
 #define USE_CONSERVATIVE_STACK_END
 #endif
 
-#if defined HAVE_GCC_ATOMIC_BUILTIN
+#if defined HAVE_GCC_ATOMIC_BUILTINS
 #ifndef _WIN32
 #ifdef HAVE_PTHREAD_H
-#define PARALLEL_GC_IS_POSSIBLE
+#define PARALLEL_GC_IS_POSSIBLE 1
 #endif
 #endif
 #endif

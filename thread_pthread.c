@@ -1060,7 +1060,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
     struct timespec ts;
     struct timeval tvn;
 
-    ATOMIC_INC(wgroup->offer_termination, 1);
+    ATOMIC_INC(wgroup->offer_termination);
 
     /* 
        try 3 step
@@ -1101,7 +1101,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
                 });
             }
             if (!is_deques_empty(wgroup)) {
-                ATOMIC_DEC(wgroup->offer_termination, 1);
+                ATOMIC_DEC(wgroup->offer_termination);
                 return FALSE;
             }
         }
