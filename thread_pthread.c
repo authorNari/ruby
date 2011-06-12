@@ -1060,13 +1060,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
     struct timespec ts;
     struct timeval tvn;
 
-#if GCC_VERSION_SINCE(4,1,2)
-    __sync_add_and_fetch(&wgroup->offer_termination, 1);
-#else
-    FGLOCK(&wgroup->owner_lock, {
-        wgroup->offer_termination++;
-    });
-#endif
+    ATOMIC_INC(wgroup->offer_termination, 1);
 
     /* 
        try 3 step
@@ -1107,13 +1101,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
                 });
             }
             if (!is_deques_empty(wgroup)) {
-#if GCC_VERSION_SINCE(4,1,2)
-                __sync_sub_and_fetch(&wgroup->offer_termination, 1);
-#else
-                FGLOCK(&wgroup->owner_lock, {
-                    wgroup->offer_termination--;
-                });
-#endif
+                ATOMIC_DEC(wgroup->offer_termination, 1);
                 return FALSE;
             }
         }

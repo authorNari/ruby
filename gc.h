@@ -12,13 +12,7 @@ NOINLINE(void rb_gc_set_stack_end(VALUE **stack_end_p));
 #define USE_CONSERVATIVE_STACK_END
 #endif
 
-#define GCC_VERSION_SINCE(major, minor, patchlevel) \
-  (defined(__GNUC__) && !defined(__INTEL_COMPILER) && \
-   ((__GNUC__ > (major)) ||  \
-    (__GNUC__ == (major) && __GNUC_MINOR__ > (minor)) || \
-    (__GNUC__ == (major) && __GNUC_MINOR__ == (minor) && __GNUC_PATCHLEVEL__ >= (patchlevel))))
-
-#if GCC_VERSION_SINCE(4,1,2)
+#if defined HAVE_GCC_ATOMIC_BUILTIN
 #ifndef _WIN32
 #ifdef HAVE_PTHREAD_H
 #define PARALLEL_GC_IS_POSSIBLE

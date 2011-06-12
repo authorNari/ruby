@@ -94,7 +94,7 @@ is_deques_empty(rb_gc_par_worker_group_t *wgroup)
 static inline VALUE
 atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 {
-#if GCC_VERSION_SINCE(4,1,2)
+#if defined HAVE_GCC_ATOMIC_BUILTINS
     return __sync_val_compare_and_swap(addr, old, new);
 #else
     /* TODO: support for not GCC */
@@ -104,7 +104,7 @@ atomic_compxchg_ptr(VALUE *addr, VALUE old, VALUE new)
 static inline void
 order_access_memory_barrier(void)
 {
-#if GCC_VERSION_SINCE(4,1,2)
+#if defined HAVE_GCC_ATOMIC_BUILTINS
     __sync_synchronize();
 #else
     /* TODO: support for not GCC */

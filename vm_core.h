@@ -504,7 +504,7 @@ typedef struct rb_gc_par_worker_group_struct {
     size_t do_index;
     size_t seq_number;
     size_t finisheds;
-    size_t offer_termination;
+    rb_atomic_t offer_termination;
     int terminate;
 } rb_gc_par_worker_group_t;
 
