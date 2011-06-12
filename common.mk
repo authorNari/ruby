@@ -616,7 +616,8 @@ file.$(OBJEXT): {$(VPATH)}file.c $(RUBY_H_INCLUDES) {$(VPATH)}io.h \
 gc.$(OBJEXT): {$(VPATH)}gc.c $(RUBY_H_INCLUDES) {$(VPATH)}re.h \
   {$(VPATH)}regex.h $(ENCODING_H_INCLUDES) $(VM_CORE_H_INCLUDES) \
   {$(VPATH)}gc.h {$(VPATH)}io.h {$(VPATH)}eval_intern.h {$(VPATH)}util.h \
-  {$(VPATH)}debug.h {$(VPATH)}internal.h {$(VPATH)}atomic.h
+  {$(VPATH)}debug.h {$(VPATH)}internal.h  {$(VPATH)}atomic.h \
+  {$(VPATH)}gc_parallel.c {$(VPATH)}gc_profile.c {$(VPATH)}gc_parallel.h
 hash.$(OBJEXT): {$(VPATH)}hash.c $(RUBY_H_INCLUDES) {$(VPATH)}util.h
 inits.$(OBJEXT): {$(VPATH)}inits.c $(RUBY_H_INCLUDES)
 io.$(OBJEXT): {$(VPATH)}io.c $(RUBY_H_INCLUDES) {$(VPATH)}io.h \
