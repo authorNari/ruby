@@ -2728,7 +2728,7 @@ Init_heap(void)
 {
     init_heap(&rb_objspace);
 #ifdef PARALLEL_GC_IS_POSSIBLE
-    init_par_mark(&rb_objspace);
+    init_par_gc(&rb_objspace);
 #endif
 }
 
