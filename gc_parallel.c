@@ -1,3 +1,6 @@
+static void gc_mark(rb_objspace_t *, VALUE, int, rb_gc_par_worker_t *);
+static void gc_mark_children(rb_objspace_t *, VALUE, int, rb_gc_par_worker_t *);
+
 static size_t
 parallel_worker_threads(void)
 {

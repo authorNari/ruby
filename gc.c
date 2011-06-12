@@ -269,6 +269,20 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
+#ifdef PARALLEL_GC_IS_POSSIBLE
+#include "gc_parallel.c"
+#endif
+
+static int
+is_serial_working(rb_objspace_t *objspace)
+{
+    /* serial work? */
+    if (objspace->par_mark.num_workers < 1) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
 rb_objspace_t *
 rb_objspace_alloc(void)
@@ -286,7 +300,7 @@ static void initial_expand_heap(rb_objspace_t *objspace);
 void
 rb_gc_set_params(void)
 {
-    char *malloc_limit_ptr, *heap_min_slots_ptr, *free_min_ptr;
+    char *malloc_limit_ptr, *heap_min_slots_ptr, *free_min_ptr, *par_gc_threads_ptr;
 
     if (rb_safe_level() > 0) return;
 
@@ -334,20 +348,6 @@ static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
 static void gc_mark(rb_objspace_t *, VALUE, int, rb_gc_par_worker_t *);
 static void gc_mark_children(rb_objspace_t *, VALUE, int, rb_gc_par_worker_t *);
-
-#ifdef PARALLEL_GC_IS_POSSIBLE
-#include "gc_parallel.c"
-#endif
-
-static int
-is_serial_working(rb_objspace_t *objspace)
-{
-    /* serial work? */
-    if (objspace->par_mark.num_workers < 1) {
-        return TRUE;
-    }
-    return FALSE;
-}
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
