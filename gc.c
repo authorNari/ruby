@@ -340,6 +340,7 @@ rb_gc_set_params(void)
                initial_par_gc_threads);
         initial_par_gc_threads = par_gc_threads_i;
     }
+    init_par_gc(&rb_objspace);
 #endif
 }
 
@@ -397,6 +398,9 @@ rb_objspace_free(rb_objspace_t *objspace)
 void
 rb_gc_set_params(void)
 {
+#ifdef PARALLEL_GC_IS_POSSIBLE
+    init_par_gc(&rb_objspace);
+#endif
 }
 #endif
 
@@ -2727,9 +2731,6 @@ void
 Init_heap(void)
 {
     init_heap(&rb_objspace);
-#ifdef PARALLEL_GC_IS_POSSIBLE
-    init_par_gc(&rb_objspace);
-#endif
 }
 
 static VALUE

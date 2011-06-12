@@ -616,7 +616,7 @@ steal(rb_objspace_t *objspace, deque_t *deques,
 }
 
 static void
-init_par_mark(rb_objspace_t *objspace)
+init_par_gc(rb_objspace_t *objspace)
 {
     void *p;
     size_t i;
