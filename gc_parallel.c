@@ -793,18 +793,33 @@ steal_mark_task(rb_gc_par_worker_t *worker)
 
 static rb_gc_par_worker_t* current_gc_worker(void);
 
-void
+static void
 gc_par_print_test(rb_gc_par_worker_t *worker)
 {
-    gc_assert(worker == current_gc_worker(), "not eq\n");
-    gc_debug("other thread! %p\n", worker);
+    do {
+        gc_assert(worker == current_gc_worker(), "not eq\n");
+        gc_debug("other thread! %p\n", worker);
+    } while (!rb_par_steal_task_offer_termination(worker->group));
 }
+
+static void
+gc_follow_marking_deques_test(rb_gc_par_worker_t *worker)
+{
+    do {
+        if (worker->index == 0) {
+            gc_debug("call gc_follow_marking_deques_test\n");
+            gc_follow_marking_deques(&rb_objspace, worker);
+        }
+    } while (!rb_par_steal_task_offer_termination(worker->group));
+}
+
 
 VALUE
 rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     deque_t *deque = &objspace->par_mark.deques[0];
+    deque_t *ary_con_deque = &objspace->par_mark.array_continue_deques[0];
     size_t res, tmp_num_workers, i;
     VALUE data, ary;
     array_continue_t ac;
@@ -812,6 +827,11 @@ rb_gc_test(void)
     rb_gc_par_worker_t *worker;
     rb_gc_par_worker_t *workers = GET_VM()->worker_group->workers;
     void (*tasks[10]) (rb_gc_par_worker_t *worker);
+
+    if (objspace->par_mark.num_workers != 4) {
+        printf("Please set PARALLEL_GC_THREADS=4.");
+        return Qnil;
+    }
 
     objspace->par_mark.deques[1].bottom = 0;
     objspace->par_mark.deques[1].age.data = 0;
@@ -1195,7 +1215,8 @@ rb_gc_test(void)
     tasks[0] = gc_par_print_test;
     tasks[1] = gc_par_print_test;
     tasks[2] = gc_par_print_test;
-    rb_gc_par_worker_group_run_tasks(worker->group, tasks, 3);
+    tasks[3] = gc_par_print_test;
+    rb_gc_par_worker_group_run_tasks(worker->group, tasks, 4);
 
     printf("steal. use randome, so lack of stability test case.\n");
     tmp_num_workers = objspace->par_mark.num_workers;
@@ -1248,6 +1269,53 @@ rb_gc_test(void)
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
     gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
+
+    {
+        RVALUE *parent, *child, *array, *array_elm_parent, *array_elm_child;
+
+        printf("gc_follow_marking_deques()\n");
+
+        deque->age.fields.top = 0;
+        deque->bottom = 0;
+        ary_con_deque->age.fields.top = 0;
+        ary_con_deque->bottom = 0;
+
+        parent = (RVALUE *)rb_ary_new2(1);
+        child = (RVALUE *)rb_ary_new2(1);
+        rb_ary_store((VALUE)parent, 0, (VALUE)child);
+        push_local_markstack(objspace, deque, (VALUE)parent);
+
+        array = (RVALUE *)rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE+5);
+        array_elm_parent = (RVALUE *)rb_ary_new2(1);
+        array_elm_child = (RVALUE *)rb_ary_new2(1);
+        rb_ary_store((VALUE)array_elm_parent, 0, (VALUE)array_elm_child);
+        rb_ary_store((VALUE)array, GC_ARRAY_CONTINUE_DEQUE_STRIDE+4,
+                     (VALUE)array_elm_parent);
+        par_mark_array_object(objspace, &workers[0], (RVALUE *)array, 0);
+
+        tasks[0] = gc_follow_marking_deques_test;
+        tasks[1] = gc_follow_marking_deques_test;
+        tasks[2] = gc_follow_marking_deques_test;
+        tasks[3] = gc_follow_marking_deques_test;
+        rb_gc_par_worker_group_run_tasks(worker->group, tasks, 4);
+
+        gc_assert(size_deque(deque, deque->bottom, deque->age.fields.top) == 0,
+                  "deque size not zero\n");
+        gc_assert(deque->markstack.index == 0, "deque markstack index(%d)\n",
+                  (int)deque->markstack.index);
+        gc_assert(size_deque(ary_con_deque,
+                             ary_con_deque->bottom,
+                             ary_con_deque->age.fields.top) == 0,
+                  "ary_con_deque size not zero\n");
+
+        gc_assert(!(parent->as.basic.flags & FL_MARK), "parent is marked.\n");
+        gc_assert(child->as.basic.flags & FL_MARK, "child is marked.\n");
+        gc_assert(!(array->as.basic.flags & FL_MARK), "array is marked.\n");
+        gc_assert(array_elm_parent->as.basic.flags & FL_MARK,
+                  "array_elm_parent is marked.\n");
+        gc_assert(array_elm_child->as.basic.flags & FL_MARK,
+                  "array_elm_child is marked.\n");
+    }
 
     printf("all test passed\n");
     return Qnil;
