@@ -731,9 +731,6 @@ par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
     for(; index < end; index++) {
         gc_mark(objspace, *(ptr+index), 0, worker);
     }
-    if (end < len) {
-        push_array_continue(objspace, worker->local_array_conts, obj, index);
-    }
 }
 
 
@@ -985,20 +982,30 @@ rb_gc_test(void)
     gc_assert(deque->bottom == GC_DEQUE_SIZE_MASK(), "bottom %d\n",
               (int)deque->bottom);
 
-    printf("par_mark_array_object\n");
-    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
-    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qtrue);
-    par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 0);
-    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[0];
-    gc_assert((VALUE)ac.obj == ary, "not eq\n");
-    gc_assert(ac.index == 512, "not eq\n");
-    par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 512);
-    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
-    gc_assert((VALUE)ac.obj != ary, "not eq\n");
-    par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 510);
-    ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
-    gc_assert((VALUE)ac.obj == ary, "not eq\n");
-    gc_assert(ac.index == 1022, "not eq\n");
+    {
+        RVALUE *elm_stride_end, *elm_end;
+
+        printf("par_mark_array_object\n");
+        ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
+        elm_stride_end = (RVALUE *)rb_ary_new2(1);
+        rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE-1, (VALUE)elm_stride_end);
+        elm_end = (RVALUE *)rb_ary_new2(1);
+        rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, (VALUE)elm_end);
+        par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 0);
+        ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[0];
+        gc_assert(elm_stride_end->as.basic.flags & FL_MARK, "not marked\n");
+        par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 512);
+        ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
+        gc_assert(elm_end->as.basic.flags & FL_MARK, "not marked\n");
+        elm_end->as.basic.flags &= ~FL_MARK;
+        gc_assert(!(elm_end->as.basic.flags & FL_MARK), "marked\n");
+        par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 510);
+        gc_assert(!(elm_end->as.basic.flags & FL_MARK), "marked\n");
+
+        deque->age.fields.top = 0;
+        deque->bottom = 0;
+        deque->markstack.index = 0;
+    }
 
     printf("pop_top test\n");
     deque->age.fields.top = 0;
@@ -1022,6 +1029,10 @@ rb_gc_test(void)
     gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
 
+    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
+    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qnil);
+    push_array_continue(objspace, workers[0].local_array_conts,
+                        (RVALUE *)ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE);
     res = pop_top(workers[0].local_array_conts, (void **)&res_ac);
     gc_assert(res == TRUE, "fail\n");
     gc_assert((VALUE)res_ac->obj == ary, "ac.ary = %p\n", res_ac->obj);
@@ -1264,6 +1275,10 @@ rb_gc_test(void)
     gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
+    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
+    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qnil);
+    push_array_continue(objspace, workers[0].local_array_conts,
+                        (RVALUE *)ary, 1022);
     res = steal(objspace, objspace->par_mark.array_continue_deques,
                 1, (void **)&res_ac);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
@@ -1271,12 +1286,13 @@ rb_gc_test(void)
     gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);
 
     {
-        RVALUE *parent, *child, *array, *array_elm_parent, *array_elm_child;
+        RVALUE *parent, *child, *array, *elm_parent, *elm_child, *elm_stride_end;
 
         printf("gc_follow_marking_deques()\n");
 
         deque->age.fields.top = 0;
         deque->bottom = 0;
+        deque->markstack.index = 0;
         ary_con_deque->age.fields.top = 0;
         ary_con_deque->bottom = 0;
 
@@ -1286,12 +1302,17 @@ rb_gc_test(void)
         push_local_markstack(objspace, deque, (VALUE)parent);
 
         array = (RVALUE *)rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE+5);
-        array_elm_parent = (RVALUE *)rb_ary_new2(1);
-        array_elm_child = (RVALUE *)rb_ary_new2(1);
-        rb_ary_store((VALUE)array_elm_parent, 0, (VALUE)array_elm_child);
+        elm_parent = (RVALUE *)rb_ary_new2(1);
+        elm_child = (RVALUE *)rb_ary_new2(1);
+        elm_stride_end = (RVALUE *)rb_ary_new2(1);
+        rb_ary_store((VALUE)elm_parent, 0, (VALUE)elm_child);
         rb_ary_store((VALUE)array, GC_ARRAY_CONTINUE_DEQUE_STRIDE+4,
-                     (VALUE)array_elm_parent);
-        par_mark_array_object(objspace, &workers[0], (RVALUE *)array, 0);
+                     (VALUE)elm_parent);
+        rb_ary_store((VALUE)array, GC_ARRAY_CONTINUE_DEQUE_STRIDE-1,
+                     (VALUE)elm_stride_end);
+        push_array_continue(objspace, workers[0].local_array_conts, array, 0);
+        push_array_continue(objspace, workers[0].local_array_conts, array,
+                            GC_ARRAY_CONTINUE_DEQUE_STRIDE);
 
         tasks[0] = gc_follow_marking_deques_test;
         tasks[1] = gc_follow_marking_deques_test;
@@ -1309,12 +1330,14 @@ rb_gc_test(void)
                   "ary_con_deque size not zero\n");
 
         gc_assert(!(parent->as.basic.flags & FL_MARK), "parent is marked.\n");
-        gc_assert(child->as.basic.flags & FL_MARK, "child is marked.\n");
+        gc_assert(child->as.basic.flags & FL_MARK, "child isn't marked.\n");
         gc_assert(!(array->as.basic.flags & FL_MARK), "array is marked.\n");
-        gc_assert(array_elm_parent->as.basic.flags & FL_MARK,
-                  "array_elm_parent is marked.\n");
-        gc_assert(array_elm_child->as.basic.flags & FL_MARK,
-                  "array_elm_child is marked.\n");
+        gc_assert(elm_parent->as.basic.flags & FL_MARK,
+                  "elm_parent isn't marked.\n");
+        gc_assert(elm_child->as.basic.flags & FL_MARK,
+                  "elm_child isn't marked.\n");
+        gc_assert(elm_stride_end->as.basic.flags & FL_MARK,
+                  "elm_stride_end isn't marked.\n");
     }
 
     printf("all test passed\n");

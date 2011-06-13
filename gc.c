@@ -1765,21 +1765,24 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t
 	    goto again;
 	}
 	else {
-            long i, len = RARRAY_LEN(obj);
+            long i, end, len = RARRAY_LEN(obj);
+            VALUE *ptr = RARRAY_PTR(obj);
+
+            end = len;
 #ifdef PARALLEL_GC_IS_POSSIBLE
-            if (is_serial_working(objspace))
-#else
-            if (is_serial_working(objspace) || len <= GC_ARRAY_CONTINUE_DEQUE_STRIDE)
+            if (!is_serial_working(objspace) &&
+                end > GC_ARRAY_CONTINUE_DEQUE_STRIDE) {
+                end = GC_ARRAY_CONTINUE_DEQUE_STRIDE;
+            }
 #endif
-                {
-                VALUE *ptr = RARRAY_PTR(obj);
-                for (i=0; i < len; i++) {
-                    gc_mark(objspace, *ptr++, lev, w);
-                }
+            for (i=0; i < end; i++) {
+                gc_mark(objspace, *ptr++, lev, w);
             }
 #ifdef PARALLEL_GC_IS_POSSIBLE
-            else {
-                par_mark_array_object(objspace, w, obj, 0);
+            if (!is_serial_working(objspace) && end < len) {
+                for (i=end; i < len; i+=GC_ARRAY_CONTINUE_DEQUE_STRIDE) {
+                    push_array_continue(objspace, w->local_array_conts, obj, i);
+                }
             }
 #endif
 	}
