@@ -31,13 +31,13 @@ union deque_age {
 
 enum deque_data_type {
     DEQUE_DATA_MARKSTACK_PTR,
-    DEQUE_DATA_ARRAY_CONTINUE
+    DEQUE_DATA_ARRAY_MARK
 };
 
-typedef struct array_continue {
+typedef struct array_mark {
     RVALUE *obj;
     size_t index;
-} array_continue_t;
+} array_mark_t;
 
 
 #ifndef __LP64__
@@ -76,17 +76,17 @@ typedef struct par_markstack {
 
 #ifndef __LP64__
 #define GC_MSTACK_PTR_DEQUE_SIZE (1 << 14)
-#define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 12)
+#define GC_ARRAY_MARK_DEQUE_SIZE (1 << 12)
 #define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 * 2 / sizeof(par_markstack_t))
 #else
 #define GC_MSTACK_PTR_DEQUE_SIZE (1 << 17)
-#define GC_ARRAY_CONTINUE_DEQUE_SIZE (1 << 13)
+#define GC_ARRAY_MARK_DEQUE_SIZE (1 << 13)
 #define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 / sizeof(par_markstack_t))
 #endif
 
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
 #define GC_DEQUE_MAX() (deque->size - 2)
-#define GC_ARRAY_CONTINUE_DEQUE_STRIDE 512
+#define GC_ARRAY_MARK_DEQUE_STRIDE 512
 
 
 typedef struct deque {

@@ -118,8 +118,8 @@ deque_datas_store(deque_t *deque, size_t index, void *data)
     case DEQUE_DATA_MARKSTACK_PTR:
         ((VALUE *)deque->datas)[index] = (VALUE)data;
 	break;
-    case DEQUE_DATA_ARRAY_CONTINUE:
-        ((array_continue_t *)deque->datas)[index] = *((array_continue_t *)data);
+    case DEQUE_DATA_ARRAY_MARK:
+        ((array_mark_t *)deque->datas)[index] = *((array_mark_t *)data);
 	break;
     default:
         fprintf(stderr, "[FATAL] deque_datas_store(): unknown type %d\n",
@@ -134,8 +134,8 @@ deque_datas_entry(deque_t *deque, size_t index)
     switch (deque->type) {
     case DEQUE_DATA_MARKSTACK_PTR:
         return (void *)((VALUE *)deque->datas)[index];
-    case DEQUE_DATA_ARRAY_CONTINUE:
-        return (void *)(&((array_continue_t *)deque->datas)[index]);
+    case DEQUE_DATA_ARRAY_MARK:
+        return (void *)(&((array_mark_t *)deque->datas)[index]);
     default:
         fprintf(stderr, "[FATAL] deque_datas_entry(): unknown type %d\n",
                 (int)deque->type);
@@ -312,8 +312,8 @@ stack_page_datas_store(overflow_stack_t *stack, size_t index, void *data)
     case DEQUE_DATA_MARKSTACK_PTR:
         ((VALUE *)stack->page->datas)[index] = (VALUE)data;
 	break;
-    case DEQUE_DATA_ARRAY_CONTINUE:
-        ((array_continue_t *)stack->page->datas)[index] = *((array_continue_t *)data);
+    case DEQUE_DATA_ARRAY_MARK:
+        ((array_mark_t *)stack->page->datas)[index] = *((array_mark_t *)data);
 	break;
     default:
         fprintf(stderr, "[FATAL] stack_page_datas_store(): unknown type %d\n",
@@ -328,8 +328,8 @@ stack_page_datas_entry(overflow_stack_t *stack, size_t index)
     switch (stack->type) {
     case DEQUE_DATA_MARKSTACK_PTR:
         return (void *)((VALUE *)stack->page->datas)[index];
-    case DEQUE_DATA_ARRAY_CONTINUE:
-        return (void *)(&((array_continue_t *)stack->page->datas)[index]);
+    case DEQUE_DATA_ARRAY_MARK:
+        return (void *)(&((array_mark_t *)stack->page->datas)[index]);
     default:
         fprintf(stderr, "[FATAL] stack_page_datas_entry(): unknown type %d\n",
                 (int)stack->type);
@@ -663,23 +663,23 @@ init_par_gc(rb_objspace_t *objspace)
     if (!p) {
         return rb_memerror();
     }
-    objspace->par_mark.array_continue_deques = (deque_t *)p;
+    objspace->par_mark.array_mark_deques = (deque_t *)p;
     MEMZERO((void*)p, deque_t, num_workers);
 
     for (i = 0; i < num_workers; i++) {
-        p = malloc(GC_ARRAY_CONTINUE_DEQUE_SIZE * sizeof(array_continue_t));
+        p = malloc(GC_ARRAY_MARK_DEQUE_SIZE * sizeof(array_mark_t));
         if (!p) {
             return rb_memerror();
         }
         MEMZERO((void*)p, deque_t, 1);
-        objspace->par_mark.array_continue_deques[i].datas = p;
-        objspace->par_mark.array_continue_deques[i].size = GC_ARRAY_CONTINUE_DEQUE_SIZE;
-        objspace->par_mark.array_continue_deques[i].type = DEQUE_DATA_ARRAY_CONTINUE;
-        objspace->par_mark.array_continue_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_CONTINUE;;
-        objspace->par_mark.array_continue_deques[i].overflow_stack.page_size =
-            PAGE_DATAS_SIZE / (sizeof(array_continue_t) / SIZEOF_VOIDP);
-        objspace->par_mark.array_continue_deques[i].overflow_stack.page_index =
-            objspace->par_mark.array_continue_deques[i].overflow_stack.page_size;
+        objspace->par_mark.array_mark_deques[i].datas = p;
+        objspace->par_mark.array_mark_deques[i].size = GC_ARRAY_MARK_DEQUE_SIZE;
+        objspace->par_mark.array_mark_deques[i].type = DEQUE_DATA_ARRAY_MARK;
+        objspace->par_mark.array_mark_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_MARK;;
+        objspace->par_mark.array_mark_deques[i].overflow_stack.page_size =
+            PAGE_DATAS_SIZE / (sizeof(array_mark_t) / SIZEOF_VOIDP);
+        objspace->par_mark.array_mark_deques[i].overflow_stack.page_index =
+            objspace->par_mark.array_mark_deques[i].overflow_stack.page_size;
 
     }
 
@@ -691,7 +691,7 @@ init_par_gc(rb_objspace_t *objspace)
     workers = (rb_gc_par_worker_t *)p;
     for (i = 0; i < num_workers; i++) {
         workers[i].local_deque = &objspace->par_mark.deques[i];
-        workers[i].local_array_conts = &objspace->par_mark.array_continue_deques[i];
+        workers[i].local_array_marks = &objspace->par_mark.array_mark_deques[i];
         workers[i].index = i;
     }
 
@@ -702,10 +702,10 @@ init_par_gc(rb_objspace_t *objspace)
 }
 
 static void
-push_array_continue(rb_objspace_t *objspace, deque_t *array_conts,
+push_array_mark(rb_objspace_t *objspace, deque_t *array_conts,
                     RVALUE *obj, size_t index)
 {
-    array_continue_t ac;
+    array_mark_t ac;
 
     ac.obj = obj;
     ac.index = index;
@@ -721,11 +721,11 @@ par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
     size_t len = RARRAY_LEN(obj);
     VALUE *ptr = RARRAY_PTR(obj);
 
-    if ((index + GC_ARRAY_CONTINUE_DEQUE_STRIDE) >= len) {
+    if ((index + GC_ARRAY_MARK_DEQUE_STRIDE) >= len) {
         end = len;
     }
     else {
-        end = index + GC_ARRAY_CONTINUE_DEQUE_STRIDE;
+        end = index + GC_ARRAY_MARK_DEQUE_STRIDE;
     }
 
     for(; index < end; index++) {
@@ -738,7 +738,7 @@ static void
 gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 {
     VALUE p;
-    array_continue_t *ac;
+    array_mark_t *ac;
     int deque_empty = FALSE;
 
     do {
@@ -746,12 +746,12 @@ gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
             gc_mark_children(objspace, p, 0, worker);
         }
 
-        while(pop_bottom_with_get_back(objspace, worker->local_array_conts, (void **)&ac)) {
+        while(pop_bottom_with_get_back(objspace, worker->local_array_marks, (void **)&ac)) {
             par_mark_array_object(objspace, worker, ac->obj, ac->index);
         }
 
         deque_empty = is_empty_deque(worker->local_deque, worker->local_deque->bottom, worker->local_deque->age.fields.top) &&
-            is_empty_deque(worker->local_array_conts, worker->local_array_conts->bottom, worker->local_array_conts->age.fields.top);
+            is_empty_deque(worker->local_array_marks, worker->local_array_marks->bottom, worker->local_array_marks->age.fields.top);
     } while (!deque_empty);
 }
 
@@ -759,11 +759,11 @@ static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
     par_markstack_t *m;
-    array_continue_t *ac;
+    array_mark_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
 
     do {
-        while (steal(objspace, objspace->par_mark.array_continue_deques,
+        while (steal(objspace, objspace->par_mark.array_mark_deques,
                      worker->index, (void **)&ac)) {
             par_mark_array_object(objspace, worker, ac->obj, ac->index);
             gc_follow_marking_deques(objspace, worker);
@@ -816,11 +816,11 @@ rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     deque_t *deque = &objspace->par_mark.deques[0];
-    deque_t *ary_con_deque = &objspace->par_mark.array_continue_deques[0];
+    deque_t *ary_con_deque = &objspace->par_mark.array_mark_deques[0];
     size_t res, tmp_num_workers, i;
     VALUE data, ary;
-    array_continue_t ac;
-    array_continue_t *res_ac;
+    array_mark_t ac;
+    array_mark_t *res_ac;
     rb_gc_par_worker_t *worker;
     rb_gc_par_worker_t *workers = GET_VM()->worker_group->workers;
     void (*tasks[10]) (rb_gc_par_worker_t *worker);
@@ -986,16 +986,16 @@ rb_gc_test(void)
         RVALUE *elm_stride_end, *elm_end;
 
         printf("par_mark_array_object\n");
-        ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
+        ary = rb_ary_new2(GC_ARRAY_MARK_DEQUE_STRIDE*2);
         elm_stride_end = (RVALUE *)rb_ary_new2(1);
-        rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE-1, (VALUE)elm_stride_end);
+        rb_ary_store(ary, GC_ARRAY_MARK_DEQUE_STRIDE-1, (VALUE)elm_stride_end);
         elm_end = (RVALUE *)rb_ary_new2(1);
-        rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, (VALUE)elm_end);
+        rb_ary_store(ary, GC_ARRAY_MARK_DEQUE_STRIDE*2-1, (VALUE)elm_end);
         par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 0);
-        ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[0];
+        ac = ((array_mark_t *)(workers[0].local_array_marks->datas))[0];
         gc_assert(elm_stride_end->as.basic.flags & FL_MARK, "not marked\n");
         par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 512);
-        ac = ((array_continue_t *)(workers[0].local_array_conts->datas))[1];
+        ac = ((array_mark_t *)(workers[0].local_array_marks->datas))[1];
         gc_assert(elm_end->as.basic.flags & FL_MARK, "not marked\n");
         elm_end->as.basic.flags &= ~FL_MARK;
         gc_assert(!(elm_end->as.basic.flags & FL_MARK), "marked\n");
@@ -1029,11 +1029,11 @@ rb_gc_test(void)
     gc_assert(deque->age.fields.top == 0, "top %d\n", deque->age.fields.top);
     gc_assert(deque->age.fields.tag == 1, "tag %d\n", deque->age.fields.tag);
 
-    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
-    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qnil);
-    push_array_continue(objspace, workers[0].local_array_conts,
-                        (RVALUE *)ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE);
-    res = pop_top(workers[0].local_array_conts, (void **)&res_ac);
+    ary = rb_ary_new2(GC_ARRAY_MARK_DEQUE_STRIDE*2);
+    rb_ary_store(ary, GC_ARRAY_MARK_DEQUE_STRIDE*2-1, Qnil);
+    push_array_mark(objspace, workers[0].local_array_marks,
+                        (RVALUE *)ary, GC_ARRAY_MARK_DEQUE_STRIDE);
+    res = pop_top(workers[0].local_array_marks, (void **)&res_ac);
     gc_assert(res == TRUE, "fail\n");
     gc_assert((VALUE)res_ac->obj == ary, "ac.ary = %p\n", res_ac->obj);
     gc_assert(res_ac->index == 512, "ac.index = %d\n", (int)res_ac->index);
@@ -1275,11 +1275,11 @@ rb_gc_test(void)
     gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
-    ary = rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE*2);
-    rb_ary_store(ary, GC_ARRAY_CONTINUE_DEQUE_STRIDE*2-1, Qnil);
-    push_array_continue(objspace, workers[0].local_array_conts,
+    ary = rb_ary_new2(GC_ARRAY_MARK_DEQUE_STRIDE*2);
+    rb_ary_store(ary, GC_ARRAY_MARK_DEQUE_STRIDE*2-1, Qnil);
+    push_array_mark(objspace, workers[0].local_array_marks,
                         (RVALUE *)ary, 1022);
-    res = steal(objspace, objspace->par_mark.array_continue_deques,
+    res = steal(objspace, objspace->par_mark.array_mark_deques,
                 1, (void **)&res_ac);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
@@ -1301,18 +1301,18 @@ rb_gc_test(void)
         rb_ary_store((VALUE)parent, 0, (VALUE)child);
         push_local_markstack(objspace, deque, (VALUE)parent);
 
-        array = (RVALUE *)rb_ary_new2(GC_ARRAY_CONTINUE_DEQUE_STRIDE+5);
+        array = (RVALUE *)rb_ary_new2(GC_ARRAY_MARK_DEQUE_STRIDE+5);
         elm_parent = (RVALUE *)rb_ary_new2(1);
         elm_child = (RVALUE *)rb_ary_new2(1);
         elm_stride_end = (RVALUE *)rb_ary_new2(1);
         rb_ary_store((VALUE)elm_parent, 0, (VALUE)elm_child);
-        rb_ary_store((VALUE)array, GC_ARRAY_CONTINUE_DEQUE_STRIDE+4,
+        rb_ary_store((VALUE)array, GC_ARRAY_MARK_DEQUE_STRIDE+4,
                      (VALUE)elm_parent);
-        rb_ary_store((VALUE)array, GC_ARRAY_CONTINUE_DEQUE_STRIDE-1,
+        rb_ary_store((VALUE)array, GC_ARRAY_MARK_DEQUE_STRIDE-1,
                      (VALUE)elm_stride_end);
-        push_array_continue(objspace, workers[0].local_array_conts, array, 0);
-        push_array_continue(objspace, workers[0].local_array_conts, array,
-                            GC_ARRAY_CONTINUE_DEQUE_STRIDE);
+        push_array_mark(objspace, workers[0].local_array_marks, array, 0);
+        push_array_mark(objspace, workers[0].local_array_marks, array,
+                            GC_ARRAY_MARK_DEQUE_STRIDE);
 
         tasks[0] = gc_follow_marking_deques_test;
         tasks[1] = gc_follow_marking_deques_test;

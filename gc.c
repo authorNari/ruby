@@ -218,7 +218,7 @@ typedef struct rb_objspace {
     struct {
         size_t num_workers;
         deque_t *deques;
-        deque_t *array_continue_deques;
+        deque_t *array_mark_deques;
     } par_mark;
     struct {
         par_markstack_t *global_list;
@@ -384,11 +384,11 @@ rb_objspace_free(rb_objspace_t *objspace)
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             free_stack_pages(&objspace->par_mark.deques[i].overflow_stack);
             free(objspace->par_mark.deques[i].datas);
-            free_stack_pages(&objspace->par_mark.array_continue_deques[i].overflow_stack);
-            free(objspace->par_mark.array_continue_deques[i].datas);
+            free_stack_pages(&objspace->par_mark.array_mark_deques[i].overflow_stack);
+            free(objspace->par_mark.array_mark_deques[i].datas);
         }
         free(objspace->par_mark.deques);
-        free(objspace->par_mark.array_continue_deques);
+        free(objspace->par_mark.array_mark_deques);
     }
 #endif
 
@@ -1771,8 +1771,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t
             end = len;
 #ifdef PARALLEL_GC_IS_POSSIBLE
             if (!is_serial_working(objspace) &&
-                end > GC_ARRAY_CONTINUE_DEQUE_STRIDE) {
-                end = GC_ARRAY_CONTINUE_DEQUE_STRIDE;
+                end > GC_ARRAY_MARK_DEQUE_STRIDE) {
+                end = GC_ARRAY_MARK_DEQUE_STRIDE;
             }
 #endif
             for (i=0; i < end; i++) {
@@ -1780,8 +1780,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t
             }
 #ifdef PARALLEL_GC_IS_POSSIBLE
             if (!is_serial_working(objspace) && end < len) {
-                for (i=end; i < len; i+=GC_ARRAY_CONTINUE_DEQUE_STRIDE) {
-                    push_array_continue(objspace, w->local_array_conts, obj, i);
+                for (i=end; i < len; i+=GC_ARRAY_MARK_DEQUE_STRIDE) {
+                    push_array_mark(objspace, w->local_array_marks, obj, i);
                 }
             }
 #endif
@@ -2427,8 +2427,8 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
             objspace->par_mark.deques[i].age.data = 0;
             objspace->par_mark.deques[i].markstack.max_freed =
                 objspace->par_mark.deques[i].markstack.freed;
-            objspace->par_mark.array_continue_deques[i].bottom = 0;
-            objspace->par_mark.array_continue_deques[i].age.data = 0;
+            objspace->par_mark.array_mark_deques[i].bottom = 0;
+            objspace->par_mark.array_mark_deques[i].age.data = 0;
             vm->worker_group->workers[i].current_thread = th;
             vm->worker_group->workers[i].regs_gc_mark = regs;
         }
@@ -3660,7 +3660,7 @@ gc_profile_result(void)
 
         rb_str_cat2(result, "\n");
 	for (i = 0; i < (int)objspace->par_mark.num_workers; i++) {
-            deque_t *deque = &objspace->par_mark.array_continue_deques[i];
+            deque_t *deque = &objspace->par_mark.array_mark_deques[i];
             rb_str_catf(result, "Array Continue Deque(%d) stats.\n", i+1);
             rb_str_catf(result, "push: %d, pop_bottom: %d, pop_bottom_with_cas_win: %d, pop_bottom_with_cas_lose: %d, pop_top: %d, overflow: %d, getback: %d\n",
                         (int)deque->deque_stats[PUSH],
