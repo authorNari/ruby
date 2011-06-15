@@ -146,8 +146,8 @@ deque_datas_entry(deque_t *deque, size_t index)
 static int
 push_bottom(deque_t *deque, void *data)
 {
-    size_t local_bottom;
-    half_word top;
+    volatile size_t local_bottom;
+    volatile half_word top;
 
     local_bottom = deque->bottom;
     gc_assert(data != 0, "data is null\n");
@@ -169,8 +169,8 @@ push_bottom(deque_t *deque, void *data)
 static int
 pop_bottom(deque_t *deque, void **data)
 {
-    union deque_age old_age, new_age, res_age;
-    size_t local_bottom;
+    volatile union deque_age old_age, new_age, res_age;
+    volatile size_t local_bottom;
 
     old_age = deque->age;
     local_bottom = deque->bottom;
