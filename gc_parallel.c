@@ -184,7 +184,7 @@ pop_bottom(deque_t *deque, void **data)
     deque->bottom = local_bottom;
 
     /* necessary memory barrier. */
-    /* order_access_memory_barrier(); */
+    order_access_memory_barrier();
     *data = deque_datas_entry(deque, local_bottom);
     /* must second read of age after local_bottom decremented.
        The local_bottom decrement is lock on. */
@@ -508,7 +508,9 @@ free_local_par_markstacks(rb_objspace_t *objspace, deque_t *deque,
 
     top = end = deque->markstack.list;
     for (i = 1; i < size; i++) {
-        end = end->next;
+        if (end != NULL) {
+            end = end->next;
+        }
     }
 
     deque->markstack.list = end->next;
