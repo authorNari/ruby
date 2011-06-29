@@ -385,6 +385,7 @@ void rb_gc_mark(VALUE);
 void rb_gc_force_recycle(VALUE);
 void rb_gc(void);
 void rb_gc_copy_finalizer(VALUE,VALUE);
+VALUE rb_gc_obj_free(VALUE);
 void rb_gc_finalize_deferred(void);
 void rb_gc_call_finalizer_at_exit(void);
 VALUE rb_gc_enable(void);
