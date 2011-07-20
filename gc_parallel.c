@@ -391,8 +391,8 @@ pop_bottom_with_get_back(rb_objspace_t *objspace, deque_t *deque, void **data)
 static int
 pop_top(deque_t *deque, void **data)
 {
-    union deque_age old_age, new_age, res_age;
-    size_t local_bottom;
+    volatile union deque_age old_age, new_age, res_age;
+    volatile size_t local_bottom;
 
     old_age = deque->age;
     local_bottom = deque->bottom;
