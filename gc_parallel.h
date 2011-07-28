@@ -75,11 +75,11 @@ typedef struct par_roots {
 } par_roots_t;
 
 #ifndef __LP64__
-#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 14)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 12)
 #define GC_ARRAY_MARK_DEQUE_SIZE (1 << 12)
 #define GC_INIT_PAR_ROOTS_SIZE (512 * 1024 * 2 / sizeof(par_roots_t))
 #else
-#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 17)
+#define GC_MSTACK_PTR_DEQUE_SIZE (1 << 13)
 #define GC_ARRAY_MARK_DEQUE_SIZE (1 << 13)
 #define GC_INIT_PAR_ROOTS_SIZE (512 * 1024 / sizeof(par_roots_t))
 #endif
