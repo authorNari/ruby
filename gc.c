@@ -221,11 +221,11 @@ typedef struct rb_objspace {
         deque_t *array_mark_deques;
     } par_mark;
     struct {
-        par_markstack_t *global_list;
+        par_roots_t *global_list;
         size_t length;
         size_t freed;
         size_t local_free_min;
-    } par_markstack;
+    } par_roots;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -1211,16 +1211,9 @@ static int
 stack_check(void)
 {
     int ret;
-    rb_thread_t *th = GET_THREAD();
-    SET_STACK_END;
-    ret = STACK_LENGTH > STACK_LEVEL_MAX - GC_WATER_MARK;
-#ifdef __ia64
-    if (!ret) {
-        ret = (VALUE*)rb_ia64_bsp() - th->machine_register_stack_start >
-              th->machine_register_stack_maxsize/sizeof(VALUE) - GC_WATER_MARK;
-    }
-#endif
-    return ret;
+
+    /* TODO */
+    return 0;
 }
 
 int
@@ -1558,10 +1551,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
     obj->as.basic.flags |= FL_MARK;
     w->marked_objects++;
 
-#ifdef PARALLEL_GC_IS_POSSIBLE
-    /* parallel work? */
-    if (is_serial_working(objspace)) {
-#endif
+    if (w->state == GC_PAR_MARK) {
         if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check())) {
             if (!mark_stack_overflow) {
                 if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
@@ -1575,12 +1565,10 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
             return;
         }
         gc_mark_children(objspace, ptr, lev+1, w);
-#ifdef PARALLEL_GC_IS_POSSIBLE
     }
     else {
-        push_local_markstack(objspace, w->local_deque, (VALUE)obj);
+        push_local_root(objspace, w->local_deque, (VALUE)obj);
     }
-#endif
 }
 
 void
@@ -2425,10 +2413,11 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->par_mark.deques[i].bottom = 0;
             objspace->par_mark.deques[i].age.data = 0;
-            objspace->par_mark.deques[i].markstack.max_freed =
-                objspace->par_mark.deques[i].markstack.freed;
+            objspace->par_mark.deques[i].roots.max_freed =
+                objspace->par_mark.deques[i].roots.freed;
             objspace->par_mark.array_mark_deques[i].bottom = 0;
             objspace->par_mark.array_mark_deques[i].age.data = 0;
+            vm->worker_group->workers[i].state = GC_ROOT_SCAN;
             vm->worker_group->workers[i].current_thread = th;
             vm->worker_group->workers[i].regs_gc_mark = regs;
         }
@@ -2439,8 +2428,9 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
             objspace->heap.live_num +=
                 vm->worker_group->workers[i].marked_objects;
             vm->worker_group->workers[i].marked_objects = 0;
-            objspace->par_mark.deques[i].markstack.length =
-                objspace->par_mark.deques[i].markstack.freed;
+            objspace->par_mark.deques[i].roots.length =
+                objspace->par_mark.deques[i].roots.freed;
+            vm->worker_group->workers[i].state = GC_ROOT_SCAN;
         }
     }
 #endif

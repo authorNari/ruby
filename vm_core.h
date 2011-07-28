@@ -492,6 +492,11 @@ typedef struct rb_thread_struct {
 } rb_thread_t;
 
 #if defined(HAVE_PTHREAD_H)
+enum par_mark_state {
+    GC_PAR_MARK = 0,
+    GC_ROOT_SCAN
+};
+
 typedef struct rb_gc_par_worker_group_struct {
     size_t num_workers;
     struct rb_gc_par_worker_struct *workers;
@@ -517,6 +522,7 @@ typedef struct rb_gc_par_worker_struct {
     size_t marked_objects;
     rb_thread_t *current_thread;
     VALUE *regs_gc_mark;
+    enum par_mark_state state;
 } rb_gc_par_worker_t;
 #endif
 

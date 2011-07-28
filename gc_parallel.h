@@ -30,7 +30,7 @@ union deque_age {
 };
 
 enum deque_data_type {
-    DEQUE_DATA_MARKSTACK_PTR,
+    DEQUE_DATA_ROOTS_PTR,
     DEQUE_DATA_ARRAY_MARK
 };
 
@@ -66,22 +66,22 @@ typedef struct overflow_stack {
 } overflow_stack_t;
 
 
-#define GC_PAR_MARKSTACK_OBJS_SIZE 63
+#define GC_PAR_ROOTS_OBJS_SIZE 63
 
 /* 32bit: 128Byte, 64bit: 256Byte */
-typedef struct par_markstack {
-    VALUE objs[GC_PAR_MARKSTACK_OBJS_SIZE];
-    struct par_markstack *next;
-} par_markstack_t;
+typedef struct par_roots {
+    VALUE objs[GC_PAR_ROOTS_OBJS_SIZE];
+    struct par_roots *next;
+} par_roots_t;
 
 #ifndef __LP64__
 #define GC_MSTACK_PTR_DEQUE_SIZE (1 << 14)
 #define GC_ARRAY_MARK_DEQUE_SIZE (1 << 12)
-#define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 * 2 / sizeof(par_markstack_t))
+#define GC_INIT_PAR_ROOTS_SIZE (512 * 1024 * 2 / sizeof(par_roots_t))
 #else
 #define GC_MSTACK_PTR_DEQUE_SIZE (1 << 17)
 #define GC_ARRAY_MARK_DEQUE_SIZE (1 << 13)
-#define GC_INIT_PAR_MARKSTACK_SIZE (512 * 1024 / sizeof(par_markstack_t))
+#define GC_INIT_PAR_ROOTS_SIZE (512 * 1024 / sizeof(par_roots_t))
 #endif
 
 #define GC_DEQUE_SIZE_MASK() (deque->size - 1)
@@ -97,12 +97,12 @@ typedef struct deque {
     enum deque_data_type type;
     overflow_stack_t overflow_stack;
     struct {
-        par_markstack_t *list;
+        par_roots_t *list;
         size_t index;
         size_t length;
         size_t freed;
         size_t max_freed;
-    } markstack;
+    } roots;
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif
