@@ -1,6 +1,6 @@
 /* for GC profile */
 #define GC_PROFILE_MORE_DETAIL 0
-#define GC_WORKER_PROFILE 1
+#define GC_WORKER_PROFILE 0
 
 typedef struct gc_profile_record {
     double gc_time;
@@ -153,7 +153,7 @@ gettimeofday_time(void)
     }\
 } while(0)
 #define GC_PROF_WORKER_STOP(w_i) do {\
-    if (objspace->profile.run) {\
+    if (objspace->profile.run && objspace->profile.record[objspace->profile.count].gc_worker_times[w_i] != 0) {\
     objspace->profile.record[objspace->profile.count].gc_worker_times[w_i] = gettimeofday_time() - objspace->profile.record[objspace->profile.count].gc_worker_times[w_i];\
     }\
 } while(0)
