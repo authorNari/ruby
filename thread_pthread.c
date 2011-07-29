@@ -1055,7 +1055,6 @@ int
 rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
 {
     size_t yield_count = 0;
-    size_t spin_count = 0;
     size_t i;
     struct timespec ts;
     struct timeval tvn;
@@ -1063,10 +1062,9 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
     ATOMIC_INC(wgroup->offer_termination);
 
     /* 
-       try 3 step
-       1. spin
-       2. thread yield
-       3. sleep
+       try 2 step
+       1. thread yield
+       2. sleep
      */
     while (TRUE) {
         if (wgroup->offer_termination >= wgroup->num_workers) {
@@ -1075,19 +1073,7 @@ rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
         else {
             if (yield_count <= 1000) {
                 yield_count++;
-
-                if (spin_count > 10) {
-                    native_thread_yield();
-                    spin_count = 0;
-                }
-                else {
-                    for (i = 0; i < 4096; i++) {
-#ifndef _M_AMD64
-                        asm("pause");
-#endif
-                    }
-                    spin_count++;
-                }
+                native_thread_yield();
             }
             else {
                 yield_count = 0;
