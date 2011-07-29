@@ -735,7 +735,6 @@ par_mark_array_object(rb_objspace_t *objspace, rb_gc_par_worker_t *worker,
     }
 }
 
-
 static void
 gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 {
@@ -779,6 +778,8 @@ steal_mark_task(rb_gc_par_worker_t *worker)
             gc_follow_marking_deques(objspace, worker);
         }
     } while (!rb_par_steal_task_offer_termination(worker->group));
+
+    GC_PROF_WORKER_STOP(worker->index);
 
     if (worker->local_deque->roots.max_freed >
         objspace->par_roots.local_free_min

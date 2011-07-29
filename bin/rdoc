@@ -10,6 +10,8 @@
 
 require 'rdoc/rdoc'
 
+GC::Profiler.enable
+
 begin
   r = RDoc::RDoc.new
   r.document ARGV
@@ -31,5 +33,9 @@ rescue Exception => e
   end
 
   exit 1
+ensure
+  GC::Profiler.report
+  p GC::Profiler.total_time
+  p ObjectSpace.count_objects
 end
 

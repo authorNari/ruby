@@ -1,10 +1,16 @@
 /* for GC profile */
 #define GC_PROFILE_MORE_DETAIL 0
+#define GC_WORKER_PROFILE 1
+
 typedef struct gc_profile_record {
     double gc_time;
     double gc_mark_time;
     double gc_sweep_time;
     double gc_invoke_time;
+#if GC_WORKER_PROFILE
+    double gc_worker_wakeup_time;
+    double gc_worker_times[20];
+#endif
 
     size_t heap_use_slots;
     size_t heap_live_objects;
@@ -127,4 +133,33 @@ gettimeofday_time(void)
     } while(0)
 #define GC_PROF_INC_LIVE_NUM
 #define GC_PROF_DEC_LIVE_NUM
+#endif
+
+#if GC_WORKER_PROFILE
+#define GC_PROF_WORKER_WAKEUP_START do {\
+    if (objspace->profile.run) {\
+        objspace->profile.record[objspace->profile.count].gc_worker_wakeup_time = gettimeofday_time();\
+    }\
+} while(0)
+#define GC_PROF_WORKER_WAKEUP_STOP do {\
+    if (objspace->profile.run) {\
+    objspace->profile.record[objspace->profile.count].gc_worker_wakeup_time = gettimeofday_time() - objspace->profile.record[objspace->profile.count].gc_worker_wakeup_time;\
+    }\
+} while(0)
+
+#define GC_PROF_WORKER_START(w_i) do {\
+    if (objspace->profile.run && objspace->profile.record[objspace->profile.count].gc_worker_times[w_i] == 0) {\
+    objspace->profile.record[objspace->profile.count].gc_worker_times[w_i] = gettimeofday_time();\
+    }\
+} while(0)
+#define GC_PROF_WORKER_STOP(w_i) do {\
+    if (objspace->profile.run) {\
+    objspace->profile.record[objspace->profile.count].gc_worker_times[w_i] = gettimeofday_time() - objspace->profile.record[objspace->profile.count].gc_worker_times[w_i];\
+    }\
+} while(0)
+#else
+#define GC_PROF_WORKER_WAKEUP_START
+#define GC_PROF_WORKER_WAKEUP_STOP
+#define GC_PROF_WORKER_START(w_i)
+#define GC_PROF_WORKER_STOP(w_i)
 #endif

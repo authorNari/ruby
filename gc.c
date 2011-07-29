@@ -2452,6 +2452,8 @@ vm_mark_task(rb_gc_par_worker_t *worker)
     rb_objspace_t *objspace = &rb_objspace;
     rb_thread_t *th = worker->current_thread;
 
+    GC_PROF_WORKER_WAKEUP_STOP;
+    GC_PROF_WORKER_START(worker->index);
     th->vm->self ? rb_gc_mark(th->vm->self) : rb_vm_mark(th->vm);
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2462,6 +2464,7 @@ finalizer_table_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     mark_tbl(objspace, finalizer_table, 0, worker);
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2473,6 +2476,7 @@ current_machine_context_mark_task(rb_gc_par_worker_t *worker)
     rb_objspace_t *objspace = &rb_objspace;
     rb_thread_t *th = worker->current_thread;
 
+    GC_PROF_WORKER_START(worker->index);
     mark_current_machine_context(objspace, th, worker);
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2483,6 +2487,7 @@ symbols_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_symbols();
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2493,6 +2498,7 @@ encodings_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_encodings();
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2504,6 +2510,7 @@ protected_objects_mark_task(rb_gc_par_worker_t *worker)
     struct gc_list *list;
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     /* mark protected global variables */
     for (list = global_List; list; list = list->next) {
 	rb_gc_mark_maybe(*list->varptr);
@@ -2517,6 +2524,7 @@ end_proc_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     rb_mark_end_proc();
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2527,6 +2535,7 @@ global_tbl_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_global_tbl();
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2537,6 +2546,7 @@ class_tbl_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     mark_tbl(objspace, rb_class_tbl, 0, worker);
 
     GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
@@ -2547,6 +2557,7 @@ ivar_tbl_mark_task(rb_gc_par_worker_t *worker)
 {
     rb_objspace_t *objspace = &rb_objspace;
 
+    GC_PROF_WORKER_START(worker->index);
     /* mark generic instance variables for special constants */
     rb_mark_generic_ivar_tbl();
 
@@ -2593,6 +2604,7 @@ gc_marks(rb_objspace_t *objspace)
         }
     }
 #endif
+    GC_PROF_WORKER_WAKEUP_START;
     gc_run_tasks(objspace, th, regs.v, tasks, tasks_length);
 
     rb_gc_mark_parser();
@@ -3616,6 +3628,27 @@ gc_profile_result(void)
             }
 #endif
 	}
+
+#if GC_WORKER_PROFILE
+	rb_str_cat2(result, "\n\n");
+	rb_str_cat2(result, "Worker detail.\n");
+	rb_str_cat2(result, "Index Wakeup Time(ms)            Finish Time(ms)\n");
+        index = 1;
+	for (i = 0; i < (int)RARRAY_LEN(record); i++) {
+	    VALUE r = RARRAY_PTR(record)[i];
+            int j = 0;
+            if (rb_hash_aref(r, ID2SYM(rb_intern("GC_IS_MARKED")))) {
+                rb_str_catf(result, "%5d %25.20f\n",
+                            index++,
+                            objspace->profile.record[i].gc_worker_wakeup_time*1000);
+                for (j=0; j < objspace->par_mark.num_workers; j++) {
+                    rb_str_catf(result, "       Worker %2d %25.20f\n",
+                                j, objspace->profile.record[i].gc_worker_times[j]*1000);
+                }
+            }
+	}
+#endif
+
 #if GC_PROFILE_MORE_DETAIL
 	rb_str_cat2(result, "\n\n");
 	rb_str_cat2(result, "More detail.\n");
