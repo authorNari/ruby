@@ -677,7 +677,7 @@ init_par_gc(rb_objspace_t *objspace)
         objspace->par_mark.array_mark_deques[i].datas = p;
         objspace->par_mark.array_mark_deques[i].size = GC_ARRAY_MARK_DEQUE_SIZE;
         objspace->par_mark.array_mark_deques[i].type = DEQUE_DATA_ARRAY_MARK;
-        objspace->par_mark.array_mark_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_MARK;;
+        objspace->par_mark.array_mark_deques[i].overflow_stack.type = DEQUE_DATA_ARRAY_MARK;
         objspace->par_mark.array_mark_deques[i].overflow_stack.page_size =
             PAGE_DATAS_SIZE / (sizeof(array_mark_t) / SIZEOF_VOIDP);
         objspace->par_mark.array_mark_deques[i].overflow_stack.page_index =
@@ -764,6 +764,8 @@ steal_mark_task(rb_gc_par_worker_t *worker)
     par_roots_t *m;
     array_mark_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
+
+    gc_follow_marking_deques(objspace, worker);
 
     do {
         while (steal(objspace, objspace->par_mark.array_mark_deques,

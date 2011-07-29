@@ -2436,16 +2436,6 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
 #endif
 }
 
-#ifdef PARALLEL_GC_IS_POSSIBLE
-#define GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker) do {\
-  if (!is_serial_working(objspace)) {\
-    gc_follow_marking_deques(objspace, worker);\
-  }\
-}while(0)
-#else
-#define GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker)
-#endif
-
 static void
 vm_mark_task(rb_gc_par_worker_t *worker)
 {
@@ -2455,8 +2445,6 @@ vm_mark_task(rb_gc_par_worker_t *worker)
     GC_PROF_WORKER_WAKEUP_STOP;
     GC_PROF_WORKER_START(worker->index);
     th->vm->self ? rb_gc_mark(th->vm->self) : rb_vm_mark(th->vm);
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2466,8 +2454,6 @@ finalizer_table_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     mark_tbl(objspace, finalizer_table, 0, worker);
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2478,8 +2464,6 @@ current_machine_context_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     mark_current_machine_context(objspace, th, worker);
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2489,8 +2473,6 @@ symbols_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_symbols();
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2500,8 +2482,6 @@ encodings_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_encodings();
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2515,8 +2495,6 @@ protected_objects_mark_task(rb_gc_par_worker_t *worker)
     for (list = global_List; list; list = list->next) {
 	rb_gc_mark_maybe(*list->varptr);
     }
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2526,8 +2504,6 @@ end_proc_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     rb_mark_end_proc();
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2537,8 +2513,6 @@ global_tbl_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     rb_gc_mark_global_tbl();
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2548,8 +2522,6 @@ class_tbl_mark_task(rb_gc_par_worker_t *worker)
 
     GC_PROF_WORKER_START(worker->index);
     mark_tbl(objspace, rb_class_tbl, 0, worker);
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2560,8 +2532,6 @@ ivar_tbl_mark_task(rb_gc_par_worker_t *worker)
     GC_PROF_WORKER_START(worker->index);
     /* mark generic instance variables for special constants */
     rb_mark_generic_ivar_tbl();
-
-    GC_FOLLOW_MARKING_DEQUE_AVALABLE(objspace, worker);
 }
 
 static void
@@ -2598,7 +2568,7 @@ gc_marks(rb_objspace_t *objspace)
     tasks[tasks_length++] = class_tbl_mark_task;
     tasks[tasks_length++] = ivar_tbl_mark_task;
 #ifdef PARALLEL_GC_IS_POSSIBLE
-    if (objspace->par_mark.num_workers > 1) {
+    if (!(is_serial_working(objspace))) {
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             tasks[tasks_length++] = steal_mark_task;
         }
