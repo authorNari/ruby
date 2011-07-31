@@ -590,13 +590,17 @@ steal(rb_objspace_t *objspace, deque_t *deques,
     size_t c1, c2, sz1, sz2, i = 0;
 
     if (objspace->par_mark.num_workers > 2) {
-        c1 = deque_index;
-        while (c1 == deque_index) {
-            c1 = rand() % objspace->par_mark.num_workers;
+        c1 = rand() % objspace->par_mark.num_workers;
+        if (c1 == deque_index) {
+            c1 = (c1 + 1) % objspace->par_mark.num_workers;
         }
-        c2 = deque_index;
-        while (c2 == deque_index) {
-            c2 = rand() % objspace->par_mark.num_workers;
+        c2 = rand() % objspace->par_mark.num_workers;
+        if (c2 == deque_index) {
+            c2 = (c2 + 1) % objspace->par_mark.num_workers;
+        }
+        gc_assert(c1 != deque_index && c2 != deque_index, "steal from same deque\n");
+        if (c1 == c2) {
+            return pop_top(&deques[c1], data);
         }
         sz1 = size_deque(&deques[c1], deques[c1].bottom, deques[c1].age.fields.top);
         sz2 = size_deque(&deques[c2], deques[c2].bottom, deques[c2].age.fields.top);
