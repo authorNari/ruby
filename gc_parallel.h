@@ -66,14 +66,6 @@ typedef struct overflow_stack {
 } overflow_stack_t;
 
 
-#define GC_PAR_ROOTS_OBJS_SIZE 63
-
-/* 32bit: 128Byte, 64bit: 256Byte */
-typedef struct par_roots {
-    VALUE objs[GC_PAR_ROOTS_OBJS_SIZE];
-    struct par_roots *next;
-} par_roots_t;
-
 #ifndef __LP64__
 #define GC_MSTACK_PTR_DEQUE_SIZE (1 << 12)
 #define GC_ARRAY_MARK_DEQUE_SIZE (1 << 12)
@@ -96,13 +88,6 @@ typedef struct deque {
     size_t size;
     enum deque_data_type type;
     overflow_stack_t overflow_stack;
-    struct {
-        par_roots_t *list;
-        size_t index;
-        size_t length;
-        size_t freed;
-        size_t max_freed;
-    } roots;
 #if DEQUE_STATS
     size_t deque_stats[LAST_STAT_ID];
 #endif

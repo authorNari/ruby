@@ -221,12 +221,6 @@ typedef struct rb_objspace {
         deque_t *array_mark_deques;
     } par_mark;
     struct {
-        par_roots_t *global_list;
-        size_t length;
-        size_t freed;
-        size_t local_free_min;
-    } par_roots;
-    struct {
 	int run;
 	gc_profile_record *record;
 	size_t count;
@@ -1567,7 +1561,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev, rb_gc_par_worker_t *w)
         gc_mark_children(objspace, ptr, lev+1, w);
     }
     else {
-        push_local_root(objspace, w->local_deque, (VALUE)obj);
+        push_bottom_with_overflow(objspace, w->local_deque, (void *)obj);
     }
 }
 
@@ -2413,8 +2407,6 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
         for (i = 0; i < objspace->par_mark.num_workers; i++) {
             objspace->par_mark.deques[i].bottom = 0;
             objspace->par_mark.deques[i].age.data = 0;
-            objspace->par_mark.deques[i].roots.max_freed =
-                objspace->par_mark.deques[i].roots.freed;
             objspace->par_mark.array_mark_deques[i].bottom = 0;
             objspace->par_mark.array_mark_deques[i].age.data = 0;
             vm->worker_group->workers[i].state = GC_ROOT_SCAN;
@@ -2428,8 +2420,6 @@ gc_run_tasks(rb_objspace_t *objspace, rb_thread_t *th, VALUE *regs,
             objspace->heap.live_num +=
                 vm->worker_group->workers[i].marked_objects;
             vm->worker_group->workers[i].marked_objects = 0;
-            objspace->par_mark.deques[i].roots.length =
-                objspace->par_mark.deques[i].roots.freed;
             vm->worker_group->workers[i].state = GC_ROOT_SCAN;
         }
     }

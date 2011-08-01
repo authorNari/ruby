@@ -68,9 +68,6 @@ static inline int
 is_empty_deque(deque_t *deque, size_t bottom, size_t top)
 {
     if (size_deque(deque, bottom, top) == 0) {
-        if (deque->type == DEQUE_DATA_ROOTS_PTR && deque->roots.index > 0) {
-            return FALSE;
-        }
         return TRUE;
     }
     return FALSE;
@@ -84,6 +81,10 @@ is_deques_empty(rb_gc_par_worker_group_t *wgroup)
 
     for (i = 0; i < wgroup->num_workers; i++) {
         deque = wgroup->workers[i].local_deque;
+        if (!is_empty_deque(deque, deque->bottom, deque->age.fields.top)) {
+            return FALSE;
+        }
+        deque = wgroup->workers[i].local_array_marks;
         if (!is_empty_deque(deque, deque->bottom, deque->age.fields.top)) {
             return FALSE;
         }
@@ -419,170 +420,6 @@ pop_top(deque_t *deque, void **data)
     return FALSE;
 }
 
-static void
-alloc_global_par_roots(rb_objspace_t *objspace, size_t size)
-{
-    size_t i;
-    par_roots_t *p;
-
-    for (i = 0; i < size; i++) {
-        p = malloc(sizeof(par_roots_t));
-        if (!p) {
-            return rb_memerror();
-        }
-        p->next = objspace->par_roots.global_list;
-        objspace->par_roots.global_list = p;
-    }
-    objspace->par_roots.length += size;
-    objspace->par_roots.freed += size;
-}
-
-static void
-free_global_par_roots(rb_objspace_t *objspace, size_t size)
-{
-    size_t i;
-    par_roots_t *p;
-
-    for (i = 0; i < size; i++) {
-        p = objspace->par_roots.global_list;
-        objspace->par_roots.global_list = p->next;
-        gc_assert(p != NULL, "objspace->par_roots.global_list is small.\n");
-        free(p);
-    }
-    objspace->par_roots.length -= size;
-    objspace->par_roots.freed -= size;
-}
-
-static void
-alloc_local_par_roots(rb_objspace_t *objspace, deque_t *deque,
-                            size_t size, int need_lock)
-{
-    size_t i;
-    par_roots_t *top, *end;
-    rb_vm_t *vm = GET_VM();
-
-    if (need_lock) {
-        rb_par_worker_group_mutex_lock(vm->worker_group);
-    }
-
-    top = end = objspace->par_roots.global_list;
-    if (top == NULL) {
-        alloc_global_par_roots(objspace,
-                                    objspace->par_roots.length);
-        top = end = objspace->par_roots.global_list;
-    }
-    for (i = 0; i < size; i++) {
-        if (objspace->par_roots.global_list == NULL) {
-            alloc_global_par_roots(objspace,
-                                        objspace->par_roots.length);
-            end->next = objspace->par_roots.global_list;
-        }
-        end = objspace->par_roots.global_list;
-        objspace->par_roots.global_list =
-            objspace->par_roots.global_list->next;
-    }
-
-    end->next = deque->roots.list;
-    deque->roots.list = top;
-
-    deque->roots.length += size;
-    deque->roots.freed += size;
-    objspace->par_roots.freed -= size;
-
-    if (need_lock) {
-        rb_par_worker_group_mutex_unlock(vm->worker_group);
-    }
-}
-
-static void
-free_local_par_roots(rb_objspace_t *objspace, deque_t *deque,
-                              size_t size, int need_lock)
-{
-    size_t i;
-    par_roots_t *top, *end;
-    rb_vm_t *vm = GET_VM();
-
-    if (need_lock) {
-        rb_par_worker_group_mutex_lock(vm->worker_group);
-    }
-
-    top = end = deque->roots.list;
-    for (i = 1; i < size; i++) {
-        if (end != NULL) {
-            end = end->next;
-        }
-    }
-
-    deque->roots.list = end->next;
-    end->next = objspace->par_roots.global_list;
-    objspace->par_roots.global_list = top;
-    objspace->par_roots.freed += size;
-    deque->roots.length -= size;
-    deque->roots.freed -= size;
-
-    if (objspace->par_roots.freed > objspace->par_roots.length * 0.8) {
-        free_global_par_roots(objspace,
-                                   objspace->par_roots.length/2);
-    }
-
-    if (need_lock) {
-        rb_par_worker_group_mutex_unlock(vm->worker_group);
-    }
-}
-
-static inline void
-push_local_root(rb_objspace_t *objspace, deque_t *deque, VALUE obj)
-{
-    par_roots_t *m;
-
-    m = deque->roots.list;
-    if (deque->roots.index >= GC_PAR_ROOTS_OBJS_SIZE) {
-        deque->roots.list = m->next;
-        m->next = NULL;
-        deque->roots.freed--;
-        push_bottom_with_overflow(objspace, deque, (void *)m);
-        if (deque->roots.max_freed > deque->roots.freed) {
-            deque->roots.max_freed = deque->roots.freed;
-        }
-        if (deque->roots.list == NULL) {
-            alloc_local_par_roots(objspace, deque,
-                                       deque->roots.length,
-                                       TRUE);
-        }
-        deque->roots.index = 0;
-        m = deque->roots.list;
-    }
-
-    m->objs[deque->roots.index] = obj;
-    deque->roots.index++;
-}
-
-static inline void
-add_local_roots(deque_t *deque, par_roots_t *m)
-{
-    m->next = deque->roots.list;
-    deque->roots.list = m;
-    deque->roots.freed++;
-    deque->roots.index = GC_PAR_ROOTS_OBJS_SIZE;
-}
-
-static inline int
-pop_local_root(rb_objspace_t *objspace, deque_t *deque, VALUE *obj)
-{
-    par_roots_t *m;
-
-    m = deque->roots.list;
-    if (deque->roots.index == 0) {
-        if (!pop_bottom_with_get_back(objspace, deque, (void **)&m)) {
-            return FALSE;
-        }
-        add_local_roots(deque, m);
-    }
-
-    *obj = m->objs[--deque->roots.index];
-    return TRUE;
-}
-
 static int
 steal(rb_objspace_t *objspace, deque_t *deques,
       size_t deque_index, void **data)
@@ -636,8 +473,6 @@ init_par_gc(rb_objspace_t *objspace)
         return;
     }
 
-    alloc_global_par_roots(objspace, GC_INIT_PAR_ROOTS_SIZE);
-
     p = malloc(sizeof(deque_t) * num_workers);
     if (!p) {
         return rb_memerror();
@@ -645,8 +480,6 @@ init_par_gc(rb_objspace_t *objspace)
     objspace->par_mark.deques = (deque_t *)p;
     MEMZERO((void*)p, deque_t, num_workers);
 
-    objspace->par_roots.local_free_min =
-        GC_INIT_PAR_ROOTS_SIZE / 2 / num_workers;
     for (i = 0; i < num_workers; i++) {
         p = malloc(GC_MSTACK_PTR_DEQUE_SIZE * sizeof(VALUE));
         if (!p) {
@@ -659,10 +492,6 @@ init_par_gc(rb_objspace_t *objspace)
         objspace->par_mark.deques[i].overflow_stack.page_size = PAGE_DATAS_SIZE;
         /* for alloc new page at push_overflow_stack() */
         objspace->par_mark.deques[i].overflow_stack.page_index = PAGE_DATAS_SIZE;
-
-        alloc_local_par_roots(objspace, &objspace->par_mark.deques[i],
-                                   objspace->par_roots.local_free_min,
-                                   FALSE);
     }
 
     p = malloc(sizeof(deque_t) * num_workers);
@@ -748,7 +577,7 @@ gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 
     worker->state = GC_PAR_MARK;
     do {
-        while(pop_local_root(objspace, worker->local_deque, (VALUE *)&p)) {
+        while(pop_bottom_with_get_back(objspace, worker->local_deque, (void **)&p)) {
             gc_mark_children(objspace, p, 0, worker);
         }
 
@@ -765,7 +594,7 @@ gc_follow_marking_deques(rb_objspace_t *objspace, rb_gc_par_worker_t *worker)
 static void
 steal_mark_task(rb_gc_par_worker_t *worker)
 {
-    par_roots_t *m;
+    VALUE p;
     array_mark_t *ac;
     rb_objspace_t *objspace = &rb_objspace;
 
@@ -779,22 +608,13 @@ steal_mark_task(rb_gc_par_worker_t *worker)
         }
 
         while (steal(objspace, objspace->par_mark.deques,
-                     worker->index, (void **)&m)) {
-            add_local_roots(worker->local_deque, m);
+                     worker->index, (void **)&p)) {
+            push_bottom_with_overflow(objspace, worker->local_deque, (void *)p);
             gc_follow_marking_deques(objspace, worker);
         }
     } while (!rb_par_steal_task_offer_termination(worker->group));
 
     GC_PROF_WORKER_STOP(worker->index);
-
-    if (worker->local_deque->roots.max_freed >
-        objspace->par_roots.local_free_min
-        && worker->local_deque->roots.max_freed >
-        (worker->local_deque->roots.freed * 0.8)) {
-        free_local_par_roots(objspace, worker->local_deque,
-                                  worker->local_deque->roots.freed / 2,
-                                  TRUE);
-    }
 }
 
 #ifdef GC_DEBUG
@@ -847,6 +667,7 @@ rb_gc_test(void)
     objspace->par_mark.deques[2].age.data = 0;
     objspace->par_mark.deques[3].bottom = 0;
     objspace->par_mark.deques[3].age.data = 0;
+    workers[0].state = GC_ROOT_SCAN;
 
     printf("deque size test\n");
     deque->age.fields.top = GC_DEQUE_SIZE_MASK();
@@ -946,11 +767,11 @@ rb_gc_test(void)
 
     deque->age.fields.top = 0;
     deque->bottom = 0;
-    push_local_root(objspace, deque, (VALUE)2);
+    push_bottom(deque, (void *)2);
     res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
     gc_assert(res == FALSE, "res %d\n", (int)res);
 
-    pop_local_root(objspace, deque, (VALUE *)&data);
+    pop_bottom(deque, (void **)&data);
     res = is_empty_deque(deque, deque->bottom, deque->age.fields.top);
     gc_assert(res == TRUE, "res %d\n", (int)res);
 
@@ -960,6 +781,7 @@ rb_gc_test(void)
     printf("pop_bottom test\n");
     deque->age.fields.top = 0;
     deque->bottom = 0;
+    deque->age.fields.tag = 0;
     push_bottom(deque, (void *)1);
     push_bottom(deque, (void *)2);
     res = pop_bottom(deque, (void **)&data);
@@ -1013,9 +835,9 @@ rb_gc_test(void)
         par_mark_array_object(objspace, &workers[0], (RVALUE *)ary, 510);
         gc_assert(!(elm_end->as.basic.flags & FL_MARK), "marked\n");
 
+        deque->age.fields.tag = 0;
         deque->age.fields.top = 0;
         deque->bottom = 0;
-        deque->roots.index = 0;
     }
 
     printf("pop_top test\n");
@@ -1102,74 +924,6 @@ rb_gc_test(void)
     deque->age.fields.top = 0;
     deque->bottom = 0;
 
-    {
-        par_roots_t *tmp;
-        int diff;
-
-        printf("alloc_global_par_roots\n");
-        diff = objspace->par_roots.freed;
-        alloc_global_par_roots(objspace, 10);
-        i = 0;
-        tmp = objspace->par_roots.global_list;
-        while (tmp != NULL) {
-            tmp = tmp->next;
-            i++;
-        }
-        diff = objspace->par_roots.freed - diff;
-        gc_assert(10 == diff, "diff(%d)\n", diff);
-    }
-
-    {
-        par_roots_t *tmp;
-        int diff;
-
-        printf("free_global_par_roots\n");
-        diff = objspace->par_roots.freed;
-        free_global_par_roots(objspace, 10);
-        i = 0;
-        tmp = objspace->par_roots.global_list;
-        while (tmp != NULL) {
-            tmp = tmp->next;
-            i++;
-        }
-        diff = objspace->par_roots.freed - diff;
-        gc_assert(-10 == diff, "diff(%d)\n", diff);
-    }
-
-    {
-        par_roots_t *tmp;
-        int diff;
-
-        printf("alloc_local_par_roots\n");
-        diff = objspace->par_roots.freed;
-        alloc_local_par_roots(objspace, deque, 10, FALSE);
-        i = 0;
-        tmp = objspace->par_roots.global_list;
-        while (tmp != NULL) {
-            tmp = tmp->next;
-            i++;
-        }
-        diff = diff - i;
-        gc_assert(10 == diff, "diff(%d)\n", diff);
-    }
-
-    {
-        par_roots_t *tmp;
-        int diff;
-
-        printf("free_local_par_roots\n");
-        diff = objspace->par_roots.freed;
-        free_local_par_roots(objspace, deque, 10, FALSE);
-        i = 0;
-        tmp = objspace->par_roots.global_list;
-        while (tmp != NULL) {
-            tmp = tmp->next;
-            i++;
-        }
-        diff = diff - i;
-        gc_assert(-10 == diff, "diff(%d)\n", diff);
-    }
-
     printf("pop_bottom_with_get_back\n");
     push_bottom(deque, (void *)1);
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
@@ -1185,44 +939,6 @@ rb_gc_test(void)
     deque->bottom = 0;
     res = pop_bottom_with_get_back(objspace, deque, (void **)&data);
     gc_assert(res == FALSE, "false?\n");
-
-    printf("push_local_root\n");
-    deque->roots.max_freed = deque->roots.freed;
-    push_local_root(objspace, deque, (VALUE)1);
-    gc_assert(deque->roots.list->objs[0] == (VALUE)1, "not 1\n");
-    gc_assert(deque->roots.index == 1, "not 1\n");
-    deque->roots.index = GC_PAR_ROOTS_OBJS_SIZE;
-    push_local_root(objspace, deque, (VALUE)2);
-    gc_assert(deque->roots.list->objs[0] == 2, "not 2\n");
-    gc_assert(deque->roots.index == 1, "not 1\n");
-    gc_assert(deque->roots.freed == objspace->par_roots.local_free_min-1,
-              "%d\n", (int)deque->roots.freed);
-    gc_assert(deque->roots.max_freed == deque->roots.freed,
-              "%d == %d\n", (int)deque->roots.max_freed,
-              (int)deque->roots.freed);
-    gc_assert(deque->roots.length == objspace->par_roots.local_free_min,
-              "%d\n", (int)deque->roots.length);
-
-    printf("pop_local_root\n");
-    res = pop_local_root(objspace, deque, (VALUE *)&data);
-    gc_assert(res == TRUE, "false\n");
-    gc_assert(data == 2, "not 2\n");
-    gc_assert(deque->roots.index == 0, "not 0\n");
-    res = pop_local_root(objspace, deque, (VALUE *)&data);
-    gc_assert(res == TRUE, "false\n");
-    gc_assert(data == 0, "data: %d\n", (int)data);
-    gc_assert(deque->roots.index == GC_PAR_ROOTS_OBJS_SIZE-1,
-              "not eq\n");
-    gc_assert(deque->roots.max_freed == deque->roots.length-1,
-              "%d != %d\n",
-              (int)deque->roots.max_freed, (int)deque->roots.length-1);
-    deque->roots.index = 0;
-    res = pop_local_root(objspace, deque, (VALUE *)&data);
-    gc_assert(res == FALSE, "false\n");
-    gc_assert(deque->roots.freed == objspace->par_roots.local_free_min,
-              "%d\n", (int)deque->roots.freed);
-    gc_assert(deque->roots.length == objspace->par_roots.local_free_min,
-              "%d\n", (int)deque->roots.length);
 
     printf("worker\n");
     worker = &workers[objspace->par_mark.num_workers-1];
@@ -1303,14 +1019,13 @@ rb_gc_test(void)
 
         deque->age.fields.top = 0;
         deque->bottom = 0;
-        deque->roots.index = 0;
         ary_con_deque->age.fields.top = 0;
         ary_con_deque->bottom = 0;
 
         parent = (RVALUE *)rb_ary_new2(1);
         child = (RVALUE *)rb_ary_new2(1);
         rb_ary_store((VALUE)parent, 0, (VALUE)child);
-        push_local_root(objspace, deque, (VALUE)parent);
+        push_bottom(deque, (void *)parent);
 
         array = (RVALUE *)rb_ary_new2(GC_ARRAY_MARK_DEQUE_STRIDE+5);
         elm_parent = (RVALUE *)rb_ary_new2(1);
@@ -1333,8 +1048,6 @@ rb_gc_test(void)
 
         gc_assert(size_deque(deque, deque->bottom, deque->age.fields.top) == 0,
                   "deque size not zero\n");
-        gc_assert(deque->roots.index == 0, "deque roots index(%d)\n",
-                  (int)deque->roots.index);
         gc_assert(size_deque(ary_con_deque,
                              ary_con_deque->bottom,
                              ary_con_deque->age.fields.top) == 0,
