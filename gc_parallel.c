@@ -20,6 +20,27 @@ parallel_worker_threads(void)
     return cpus;
 }
 
+/*
+ Fast implementation of the Park Miller (1988) "minimal standard"
+ linear congruential pseudo-random number generator, using David
+ G. Carta's optimisation which needs only 32 bit integer math, and no
+ division.
+
+ http://www.firstpr.com.au/dsp/rand31/
+*/
+static uint32_t
+rand31_park_miller(uint32_t *seed)
+{
+    uint32_t hi, lo;
+
+    lo = 16807 * (*seed & 0xFFFF);
+    hi = 16807 * (*seed >> 16);
+    lo += (hi & 0x7FFF) << 16;
+    lo += hi >> 15;
+    if (lo > 0x7FFFFFFF) lo -= 0x7FFFFFFF;
+    return *seed = lo;
+}
+
 static inline size_t
 deque_increment(deque_t *deque, size_t index)
 {
@@ -422,16 +443,16 @@ pop_top(deque_t *deque, void **data)
 
 static int
 steal(rb_objspace_t *objspace, deque_t *deques,
-      size_t deque_index, void **data)
+      size_t deque_index, void **data, uint32_t *seed)
 {
     size_t c1, c2, sz1, sz2, i = 0;
 
     if (objspace->par_mark.num_workers > 2) {
-        c1 = rand() % objspace->par_mark.num_workers;
+        c1 = rand31_park_miller(seed) % objspace->par_mark.num_workers;
         if (c1 == deque_index) {
             c1 = (c1 + 1) % objspace->par_mark.num_workers;
         }
-        c2 = rand() % objspace->par_mark.num_workers;
+        c2 = rand31_park_miller(seed) % objspace->par_mark.num_workers;
         if (c2 == deque_index) {
             c2 = (c2 + 1) % objspace->par_mark.num_workers;
         }
@@ -528,6 +549,7 @@ init_par_gc(rb_objspace_t *objspace)
         workers[i].local_deque = &objspace->par_mark.deques[i];
         workers[i].local_array_marks = &objspace->par_mark.array_mark_deques[i];
         workers[i].index = i;
+        workers[i].seed = 15;
     }
 
     vm->worker_group = rb_gc_par_worker_group_create(num_workers, workers);
@@ -602,13 +624,13 @@ steal_mark_task(rb_gc_par_worker_t *worker)
 
     do {
         while (steal(objspace, objspace->par_mark.array_mark_deques,
-                     worker->index, (void **)&ac)) {
+                     worker->index, (void **)&ac, &worker->seed)) {
             par_mark_array_object(objspace, worker, ac->obj, ac->index);
             gc_follow_marking_deques(objspace, worker);
         }
 
         while (steal(objspace, objspace->par_mark.deques,
-                     worker->index, (void **)&p)) {
+                     worker->index, (void **)&p, &worker->seed)) {
             push_bottom_with_overflow(objspace, worker->local_deque, (void *)p);
             gc_follow_marking_deques(objspace, worker);
         }
@@ -956,6 +978,18 @@ rb_gc_test(void)
     tasks[3] = gc_par_print_test;
     rb_gc_par_worker_group_run_tasks(worker->group, tasks, 4);
 
+    {
+        puts("rand31_park_miller");
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+        printf("rand: %d\n", rand31_park_miller(&workers[0].seed));
+    }
+
     printf("steal. use randome, so lack of stability test case.\n");
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 4;
@@ -967,38 +1001,48 @@ rb_gc_test(void)
     push_bottom(&objspace->par_mark.deques[2], (void *)21);
     push_bottom(&objspace->par_mark.deques[2], (void *)22);
     push_bottom(&objspace->par_mark.deques[3], (void *)31);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data != 0, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
     push_bottom(&objspace->par_mark.deques[0], (void *)1);
     tmp_num_workers = objspace->par_mark.num_workers;
     objspace->par_mark.num_workers = 2;
-    res = steal(objspace, objspace->par_mark.deques, 1, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 1,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert(data == 1, "data: %d\n", (int)data);
     push_bottom(&objspace->par_mark.deques[1], (void *)11);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(data == 11, "data: %d\n", (int)data);
-    res = steal(objspace, objspace->par_mark.deques, 0, (void **)&data);
+    res = steal(objspace, objspace->par_mark.deques, 0,
+                (void **)&data, &workers[0].seed);
     gc_assert(res == 0, "res: %d\n", (int)res);
     objspace->par_mark.num_workers = tmp_num_workers;
 
@@ -1007,7 +1051,7 @@ rb_gc_test(void)
     push_array_mark(objspace, workers[0].local_array_marks,
                         (RVALUE *)ary, 1022);
     res = steal(objspace, objspace->par_mark.array_mark_deques,
-                1, (void **)&res_ac);
+                1, (void **)&res_ac, &workers[0].seed);
     gc_assert(res == TRUE, "res: %d\n", (int)res);
     gc_assert((VALUE)res_ac->obj == ary, "ac.obj: %p\n", res_ac->obj);
     gc_assert((int)res_ac->index == 1022, "ac.index: %d\n", (int)res_ac->index);

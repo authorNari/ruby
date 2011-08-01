@@ -523,6 +523,7 @@ typedef struct rb_gc_par_worker_struct {
     rb_thread_t *current_thread;
     VALUE *regs_gc_mark;
     enum par_mark_state state;
+    uint32_t seed;
 } rb_gc_par_worker_t;
 #endif
 
