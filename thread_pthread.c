@@ -1054,38 +1054,21 @@ rb_par_worker_group_mutex_unlock(rb_gc_par_worker_group_t *wgroup)
 int
 rb_par_steal_task_offer_termination(rb_gc_par_worker_group_t *wgroup)
 {
-    size_t yield_count = 0;
-    size_t i;
     struct timespec ts;
     struct timeval tvn;
 
     ATOMIC_INC(wgroup->offer_termination);
 
     /* 
-       try 2 step
+       try 1 step
        1. thread yield
-       2. sleep
      */
     while (TRUE) {
         if (wgroup->offer_termination >= wgroup->num_workers) {
             return TRUE;
         }
         else {
-            if (yield_count <= 1000) {
-                yield_count++;
-                native_thread_yield();
-            }
-            else {
-                yield_count = 0;
-
-                gettimeofday(&tvn, NULL);
-                ts.tv_sec = tvn.tv_sec;
-                ts.tv_nsec = (tvn.tv_usec + 1000) * 1000;
-                FGLOCK(&wgroup->owner_lock, {
-                    native_cond_timedwait(&wgroup->workers_wait_cond,
-					   &wgroup->owner_lock, &ts);
-                });
-            }
+            native_thread_yield();
             if (!is_deques_empty(wgroup)) {
                 ATOMIC_DEC(wgroup->offer_termination);
                 return FALSE;
