@@ -24,6 +24,8 @@
 #include <stdio.h>
 #include <setjmp.h>
 #include <sys/types.h>
+#include <malloc.h>
+#include <assert.h>
 
 #ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>
@@ -1020,6 +1022,37 @@ allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 	rb_memerror();
     }
     heaps_length = next_heaps_length;
+}
+
+static void *
+aligned_malloc(size_t aligned_size)
+{
+    void *res;
+
+#if _WIN32 || defined __CYGWIN__
+    res = _aligned_malloc(aligned_size, aligned_size);
+#else
+# if _POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600
+    if (posix_memalign(&res, aligned_size, aligned_size) == 0) {
+        return res;
+    } else {
+        return NULL;
+    }
+# else
+    res = memalign(aligned_size, aligned_size);
+# endif
+#endif
+    return res;
+}
+
+static void
+aligned_free(void * ptr)
+{
+#if _WIN32 || defined __CYGWIN__
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
 }
 
 static void
@@ -3654,6 +3687,21 @@ gc_profile_total_time(VALUE self)
     return DBL2NUM(time);
 }
 
+#ifdef GC_DEBUG
+static VALUE
+gc_test(VALUE self)
+{
+    void *p;
+
+    puts("aligned_malloc/aligned_free");
+    p = aligned_malloc(HEAP_SIZE);
+    assert(((int)p & (HEAP_SIZE-1)) == 0);
+    aligned_free(p);
+
+    return Qnil;
+}
+#endif
+
 /*  Document-class: GC::Profiler
  *
  *  The GC profiler provides access to information on GC runs including time,
@@ -3695,6 +3743,9 @@ Init_GC(void)
     rb_define_singleton_method(rb_mGC, "stress=", gc_stress_set, 1);
     rb_define_singleton_method(rb_mGC, "count", gc_count, 0);
     rb_define_singleton_method(rb_mGC, "stat", gc_stat, -1);
+#ifdef GC_DEBUG
+    rb_define_singleton_method(rb_mGC, "test", gc_test, -1);
+#endif
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
 
     rb_mProfiler = rb_define_module_under(rb_mGC, "Profiler");
