@@ -321,6 +321,11 @@ struct sorted_heaps_slot {
     struct heaps_slot *slot;
 };
 
+struct heaps_bitmap {
+    struct heaps_bitmap *next;
+    uintptr_t *map;
+};
+
 struct gc_list {
     VALUE *varptr;
     struct gc_list *next;
@@ -344,9 +349,11 @@ typedef struct rb_objspace {
 	struct heaps_slot *ptr;
 	struct heaps_slot *sweep_slots;
 	struct sorted_heaps_slot *sorted;
+	struct heaps_bitmap *bitmap;
 	size_t length;
 	size_t used;
 	RVALUE *freelist;
+	struct heaps_bitmap *free_bitmap;
 	RVALUE *range[2];
 	RVALUE *freed;
 	size_t live_num;
@@ -528,6 +535,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 /*#define HEAP_SIZE 0x800 */
 
 #define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE))
+#define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 
 extern st_table *rb_class_tbl;
 
@@ -1000,7 +1008,6 @@ rb_gc_unregister_address(VALUE *addr)
     }
 }
 
-
 static void
 allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 {
@@ -1021,7 +1028,26 @@ allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
 	during_gc = 0;
 	rb_memerror();
     }
-    heaps_length = next_heaps_length;
+}
+
+static void
+allocate_bitmaps(rb_objspace_t *objspace, size_t add)
+{
+    struct heaps_bitmap *p;
+    size_t i, size;
+
+    size = sizeof(struct heaps_bitmap) + HEAP_BITMAP_LIMIT;
+    for (i = 0; i < add; i++) {
+	p = (struct heaps_bitmap *)malloc(size);
+        if (p == 0) {
+            during_gc = 0;
+            rb_memerror();
+            return;
+        }
+        p->map = (uintptr_t *)(p+1);
+        p->next = objspace->heap.free_bitmap;
+        objspace->heap.free_bitmap = p;
+    }
 }
 
 static void *
@@ -1132,9 +1158,14 @@ static void
 add_heap_slots(rb_objspace_t *objspace, size_t add)
 {
     size_t i;
+    size_t next_heaps_length;
 
-    if ((heaps_used + add) > heaps_length) {
-        allocate_sorted_heaps(objspace, heaps_used + add);
+    next_heaps_length = heaps_used + add;
+
+    if (next_heaps_length > heaps_length) {
+        allocate_sorted_heaps(objspace, next_heaps_length);
+        allocate_bitmaps(objspace, add);
+        heaps_length = next_heaps_length;
     }
 
     for (i = 0; i < add; i++) {
@@ -1184,6 +1215,8 @@ set_heaps_increment(rb_objspace_t *objspace)
 
     if (next_heaps_length > heaps_length) {
 	allocate_sorted_heaps(objspace, next_heaps_length);
+        allocate_bitmaps(objspace, next_heaps_length - heaps_used);
+        heaps_length = next_heaps_length;
     }
 }
 
@@ -3692,12 +3725,23 @@ static VALUE
 gc_test(VALUE self)
 {
     void *p;
+    rb_objspace_t *objspace = &rb_objspace;
 
-    puts("aligned_malloc/aligned_free");
-    p = aligned_malloc(HEAP_SIZE);
-    assert(((int)p & (HEAP_SIZE-1)) == 0);
-    aligned_free(p);
+    {
+        puts("= aligned_malloc/aligned_free");
+        p = aligned_malloc(HEAP_SIZE);
+        assert(((uintptr_t)p & (HEAP_SIZE-1)) == 0);
+        aligned_free(p);
+    }
 
+    {
+        struct heaps_bitmap *map;
+        puts("= allocate_bitmaps");
+        allocate_bitmaps(objspace, 1);
+        map = objspace->heap.free_bitmap;
+        assert(map != NULL);
+        assert((uintptr_t)map->map == (((uintptr_t)map)+sizeof(struct heaps_bitmap)));
+    }
     return Qnil;
 }
 #endif
