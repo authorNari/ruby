@@ -326,6 +326,11 @@ struct heaps_bitmap {
     uintptr_t *map;
 };
 
+struct heaps_header {
+    struct heaps_slot *base;
+    struct heaps_bitmap *bits;
+};
+
 struct gc_list {
     VALUE *varptr;
     struct gc_list *next;
@@ -425,6 +430,8 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 
 #define nonspecial_obj_id(obj) (VALUE)((SIGNED_VALUE)(obj)|FIXNUM_FLAG)
 
+#define HEAP_HEADER(p) ((struct heaps_header *)(p))
+
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
@@ -487,6 +494,7 @@ rb_gc_set_params(void)
 static void gc_sweep(rb_objspace_t *);
 static void slot_sweep(rb_objspace_t *, struct heaps_slot *);
 static void gc_clear_mark_on_sweep_slots(rb_objspace_t *);
+static void aligned_free(void *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -504,10 +512,18 @@ rb_objspace_free(rb_objspace_t *objspace)
 	    free(list);
 	}
     }
+    if (objspace->heap.free_bitmap) {
+        struct heaps_bitmap *list, *next;
+        for (list = objspace->heap.free_bitmap; list; list = next) {
+            next = list->next;
+            free(list);
+        }
+    }
     if (objspace->heap.sorted) {
 	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
-	    free(objspace->heap.sorted[i].slot->membase);
+            free(HEAP_HEADER(objspace->heap.sorted[i].slot->membase)->bits);
+	    aligned_free(objspace->heap.sorted[i].slot->membase);
 	    free(objspace->heap.sorted[i].slot);
 	}
 	free(objspace->heap.sorted);
@@ -534,7 +550,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 /* 2KB */
 /*#define HEAP_SIZE 0x800 */
 
-#define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE))
+#define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE) - 1)
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 
 extern st_table *rb_class_tbl;
@@ -1072,7 +1088,7 @@ aligned_malloc(size_t aligned_size)
 }
 
 static void
-aligned_free(void * ptr)
+aligned_free(void *ptr)
 {
 #if _WIN32 || defined __CYGWIN__
     _aligned_free(ptr);
@@ -1090,14 +1106,14 @@ assign_heap_slot(rb_objspace_t *objspace)
     size_t objs;
 
     objs = HEAP_OBJ_LIMIT;
-    p = (RVALUE*)malloc(HEAP_SIZE);
+    p = (RVALUE*)aligned_malloc(HEAP_SIZE);
     if (p == 0) {
 	during_gc = 0;
 	rb_memerror();
     }
     slot = (struct heaps_slot *)malloc(sizeof(struct heaps_slot));
     if (slot == 0) {
-	xfree(p);
+	aligned_free(p);
 	during_gc = 0;
 	rb_memerror();
     }
@@ -1108,11 +1124,12 @@ assign_heap_slot(rb_objspace_t *objspace)
     heaps = slot;
 
     membase = p;
+    p = (RVALUE*)((VALUE)p + sizeof(struct heaps_header));
     if ((VALUE)p % sizeof(RVALUE) != 0) {
-	p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
-	if ((HEAP_SIZE - HEAP_OBJ_LIMIT * sizeof(RVALUE)) < (size_t)((char*)p - (char*)membase)) {
-	    objs--;
-	}
+       p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
+       if ((HEAP_SIZE - HEAP_OBJ_LIMIT * sizeof(RVALUE)) < (size_t)((char*)p - (char*)membase)) {
+           objs--;
+       }
     }
 
     lo = 0;
@@ -1140,6 +1157,10 @@ assign_heap_slot(rb_objspace_t *objspace)
     heaps->membase = membase;
     heaps->slot = p;
     heaps->limit = objs;
+    assert(objspace->heap.free_bitmap != NULL);
+    HEAP_HEADER(membase)->base = heaps;
+    HEAP_HEADER(membase)->bits = objspace->heap.free_bitmap;
+    objspace->heap.free_bitmap = HEAP_HEADER(membase)->bits->next;
     objspace->heap.free_num += objs;
     pend = p + objs;
     if (lomem == 0 || lomem > p) lomem = p;
@@ -2067,11 +2088,15 @@ free_unused_heaps(rb_objspace_t *objspace)
 
     for (i = j = 1; j < heaps_used; i++) {
 	if (objspace->heap.sorted[i].slot->limit == 0) {
+            HEAP_HEADER(objspace->heap.sorted[i].slot->membase)->bits->next =
+                objspace->heap.free_bitmap;
+            objspace->heap.free_bitmap =
+                HEAP_HEADER(objspace->heap.sorted[i].slot->membase)->bits;
 	    if (!last) {
 		last = objspace->heap.sorted[i].slot->membase;
 	    }
 	    else {
-		free(objspace->heap.sorted[i].slot->membase);
+		aligned_free(objspace->heap.sorted[i].slot->membase);
 	    }
             free(objspace->heap.sorted[i].slot);
 	    heaps_used--;
@@ -2085,11 +2110,11 @@ free_unused_heaps(rb_objspace_t *objspace)
     }
     if (last) {
 	if (last < heaps_freed) {
-	    free(heaps_freed);
+	    aligned_free(heaps_freed);
 	    heaps_freed = last;
 	}
 	else {
-	    free(last);
+	    aligned_free(last);
 	}
     }
 }
