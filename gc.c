@@ -521,24 +521,23 @@ rb_objspace_free(rb_objspace_t *objspace)
 }
 #endif
 
-/* tiny heap size */
-/* 32KB */
-/*#define HEAP_SIZE 0x8000 */
-/* 128KB */
-/*#define HEAP_SIZE 0x20000 */
-/* 64KB */
-/*#define HEAP_SIZE 0x10000 */
-/* 16KB */
-#define HEAP_SIZE 0x4000
-/* 8KB */
-/*#define HEAP_SIZE 0x2000 */
-/* 4KB */
-/*#define HEAP_SIZE 0x1000 */
-/* 2KB */
-/*#define HEAP_SIZE 0x800 */
+/* tiny heap size: 16KB */
+#define HEAP_ALIGN_LOG 14
+#define HEAP_ALIGN 0x4000
+#define HEAP_ALIGN_MASK 0x3fff
+#define HEAP_SIZE HEAP_ALIGN
 
 #define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE) - 1)
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
+
+#define GET_HEAP_HEADER(x, m) (HEAP_HEADER(((uintptr_t)x) & ~(m)))
+#define GET_HEAP_BITMAP(x, m) (GET_HEAP_HEADER(x, m)->bits)
+#define NUM_IN_SLOT(p) (((uintptr_t)p & HEAP_ALIGN_MASK)/sizeof(RVALUE))
+#define BITMAP_INDEX(p) (NUM_IN_SLOT(p) / (sizeof(uintptr_t) * 8))
+#define BITMAP_OFFSET(p) (NUM_IN_SLOT(p) & ((sizeof(uintptr_t) * 8)-1))
+#define MARKED_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] & 1 << BITMAP_OFFSET(p))
+#define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] |= 1 << BITMAP_OFFSET(p))
+#define CLEAR_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] &= ~(1 << BITMAP_OFFSET(p)))
 
 extern st_table *rb_class_tbl;
 
@@ -3736,6 +3735,28 @@ gc_test(VALUE self)
         assert(0 == objspace->heap.sorted[0].bits[0]);
         assert(0 == objspace->heap.sorted[0].bits[HEAP_BITMAP_LIMIT-1]);
         assert(objspace->heap.sorted[0].bits != objspace->heap.sorted[1].bits);
+    }
+
+    {
+        RVALUE *first, *last;
+
+        puts("= bitmap operations");
+        first = heaps->slot;
+        last = heaps->slot + heaps->limit;
+
+        printf("first: %ld %ld %ld | ", NUM_IN_SLOT(first), BITMAP_INDEX(first),
+               BITMAP_OFFSET(first));
+        printf("last: %ld %ld %ld\n", NUM_IN_SLOT(last), BITMAP_INDEX(last),
+               BITMAP_OFFSET(last));
+
+        assert((heaps->limit+NUM_IN_SLOT(first)) == NUM_IN_SLOT(last));
+
+        assert(0 == BITMAP_INDEX(first));
+        assert(NUM_IN_SLOT(first) == BITMAP_OFFSET(first));
+        assert(HEAP_HEADER(heaps->membase) ==
+               GET_HEAP_HEADER(first, HEAP_ALIGN_MASK));
+        MARK_IN_BITMAP(GET_HEAP_BITMAP(first, HEAP_ALIGN_MASK), first);
+        assert(MARKED_IN_BITMAP(GET_HEAP_BITMAP(first, HEAP_ALIGN_MASK), first));
     }
     return Qnil;
 }
