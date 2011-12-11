@@ -509,7 +509,7 @@ rb_objspace_free(rb_objspace_t *objspace)
     if (objspace->heap.sorted) {
 	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
-            free(HEAP_HEADER(objspace->heap.sorted[i].slot->membase)->bits);
+            free(objspace->heap.sorted[i].bits);
 	    aligned_free(objspace->heap.sorted[i].slot->membase);
 	    free(objspace->heap.sorted[i].slot);
 	}
@@ -530,14 +530,14 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE) - 1)
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 
-#define GET_HEAP_HEADER(x, m) (HEAP_HEADER(((uintptr_t)x) & ~(m)))
-#define GET_HEAP_BITMAP(x, m) (GET_HEAP_HEADER(x, m)->bits)
+#define GET_HEAP_HEADER(x) (HEAP_HEADER(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
+#define GET_HEAP_BITMAP(x) (GET_HEAP_HEADER(x)->bits)
 #define NUM_IN_SLOT(p) (((uintptr_t)p & HEAP_ALIGN_MASK)/sizeof(RVALUE))
 #define BITMAP_INDEX(p) (NUM_IN_SLOT(p) / (sizeof(uintptr_t) * 8))
 #define BITMAP_OFFSET(p) (NUM_IN_SLOT(p) & ((sizeof(uintptr_t) * 8)-1))
-#define MARKED_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] & 1 << BITMAP_OFFSET(p))
-#define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] |= 1 << BITMAP_OFFSET(p))
-#define CLEAR_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] &= ~(1 << BITMAP_OFFSET(p)))
+#define MARKED_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] & ((uintptr_t)1 << BITMAP_OFFSET(p)))
+#define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] = bits[BITMAP_INDEX(p)] | ((uintptr_t)1 << BITMAP_OFFSET(p)))
+#define CLEAR_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] &= ~((uintptr_t)1 << BITMAP_OFFSET(p)))
 
 extern st_table *rb_class_tbl;
 
@@ -546,6 +546,24 @@ int ruby_disable_gc_stress = 0;
 static void run_final(rb_objspace_t *objspace, VALUE obj);
 static int garbage_collect(rb_objspace_t *objspace);
 static int gc_lazy_sweep(rb_objspace_t *objspace);
+
+//for debug
+void
+bitmap_p(RVALUE *p)
+{
+    uintptr_t *bits;
+    int index, offset, marked, num;
+
+    bits = GET_HEAP_BITMAP(p);
+    index = BITMAP_INDEX(p);
+    offset = BITMAP_OFFSET(p);
+    marked = MARKED_IN_BITMAP(bits, p);
+    num = NUM_IN_SLOT(p);
+    printf("bitmap : ((uintptr_t *)%p)\n", bits);
+    printf("num_in_slot : %d | map_index : %d | offset : %d\n",
+           num, index, offset);
+    printf("is mark ? %s\n", marked? "true" : "false");
+}
 
 void
 rb_global_variable(VALUE *var)
@@ -1040,7 +1058,6 @@ allocate_sorted_heaps(rb_objspace_t *objspace, size_t next_heaps_length)
             rb_memerror();
             return;
         }
-        memset(bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
         objspace->heap.sorted[i].bits = bits;
     }
 }
@@ -1138,6 +1155,8 @@ assign_heap_slot(rb_objspace_t *objspace)
     heaps->limit = objs;
     HEAP_HEADER(membase)->base = heaps;
     HEAP_HEADER(membase)->bits = objspace->heap.sorted[hi].bits;
+    memset(objspace->heap.sorted[hi].bits, 0,
+           HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
     objspace->heap.free_num += objs;
     pend = p + objs;
     if (lomem == 0 || lomem > p) lomem = p;
@@ -1434,8 +1453,8 @@ gc_mark_all(rb_objspace_t *objspace)
     for (i = 0; i < heaps_used; i++) {
 	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
 	while (p < pend) {
-	    if ((p->as.basic.flags & FL_MARK) &&
-		(p->as.basic.flags != FL_MARK)) {
+	    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p) &&
+		p->as.basic.flags) {
 		gc_mark_children(objspace, (VALUE)p, 0);
 	    }
 	    p++;
@@ -1703,12 +1722,14 @@ static void
 gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
 {
     register RVALUE *obj;
+    register uintptr_t *bits;
 
     obj = RANY(ptr);
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
-    if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
-    obj->as.basic.flags |= FL_MARK;
+    bits = GET_HEAP_BITMAP(ptr);
+    if (MARKED_IN_BITMAP(bits, ptr)) return;  /* already marked */
+    MARK_IN_BITMAP(bits, ptr);
     objspace->heap.live_num++;
 
     if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check(STACKFRAME_FOR_GC_MARK))) {
@@ -1736,6 +1757,7 @@ static void
 gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 {
     register RVALUE *obj = RANY(ptr);
+    register uintptr_t *bits;
 
     goto marking;		/* skip */
 
@@ -1743,8 +1765,9 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
     obj = RANY(ptr);
     if (rb_special_const_p(ptr)) return; /* special const not marked */
     if (obj->as.basic.flags == 0) return;       /* free cell */
-    if (obj->as.basic.flags & FL_MARK) return;  /* already marked */
-    obj->as.basic.flags |= FL_MARK;
+    bits = GET_HEAP_BITMAP(ptr);
+    if (MARKED_IN_BITMAP(bits, ptr)) return;  /* already marked */
+    MARK_IN_BITMAP(bits, ptr);
     objspace->heap.live_num++;
 
   marking:
@@ -2091,16 +2114,30 @@ free_unused_heaps(rb_objspace_t *objspace)
 }
 
 static void
+gc_clear_slot_bits(struct heaps_slot *slot)
+{
+    size_t i;
+    uintptr_t *bits;
+
+    bits = GET_HEAP_BITMAP(slot->slot);
+    for (i=0; i<HEAP_BITMAP_LIMIT; i++) {
+        bits[i] = 0;
+    }
+}
+
+static void
 slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
 {
     size_t free_num = 0, final_num = 0;
     RVALUE *p, *pend;
     RVALUE *free = freelist, *final = deferred_final_list;
     int deferred;
+    uintptr_t *bits;
 
     p = sweep_slot->slot; pend = p + sweep_slot->limit;
+    bits = GET_HEAP_BITMAP(p);
     while (p < pend) {
-        if (!(p->as.basic.flags & FL_MARK)) {
+        if ((!(MARKED_IN_BITMAP(bits, p))) && BUILTIN_TYPE(p) != T_ZOMBIE) {
             if (p->as.basic.flags &&
                 ((deferred = obj_free(objspace, (VALUE)p)) ||
 		 (FL_TEST(p, FL_FINALIZE)))) {
@@ -2108,7 +2145,6 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
                     p->as.free.flags = T_ZOMBIE;
                     RDATA(p)->dfree = 0;
                 }
-                p->as.free.flags |= FL_MARK;
                 p->as.free.next = deferred_final_list;
                 deferred_final_list = p;
                 final_num++;
@@ -2118,15 +2154,9 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
                 free_num++;
             }
         }
-        else if (BUILTIN_TYPE(p) == T_ZOMBIE) {
-            /* objects to be finalized */
-            /* do nothing remain marked */
-        }
-        else {
-            RBASIC(p)->flags &= ~FL_MARK;
-        }
         p++;
     }
+    gc_clear_slot_bits(sweep_slot);
     if (final_num + free_num == sweep_slot->limit &&
         objspace->heap.free_num > objspace->heap.do_heap_free) {
         RVALUE *pp;
@@ -2313,7 +2343,8 @@ rb_gc_force_recycle(VALUE p)
 {
     rb_objspace_t *objspace = &rb_objspace;
     GC_PROF_DEC_LIVE_NUM;
-    if (RBASIC(p)->flags & FL_MARK) {
+    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
+        CLEAR_IN_BITMAP(GET_HEAP_BITMAP(p), p);
         RANY(p)->as.free.flags = 0;
     }
     else {
@@ -2510,19 +2541,12 @@ static void
 gc_clear_mark_on_sweep_slots(rb_objspace_t *objspace)
 {
     struct heaps_slot *scan;
-    RVALUE *p, *pend;
 
     if (objspace->heap.sweep_slots) {
         while (heaps_increment(objspace));
         while (objspace->heap.sweep_slots) {
             scan = objspace->heap.sweep_slots;
-            p = scan->slot; pend = p + scan->limit;
-            while (p < pend) {
-                if (p->as.free.flags & FL_MARK && BUILTIN_TYPE(p) != T_ZOMBIE) {
-                    p->as.basic.flags &= ~FL_MARK;
-                }
-                p++;
-            }
+            gc_clear_slot_bits(scan);
             objspace->heap.sweep_slots = objspace->heap.sweep_slots->next;
         }
     }
@@ -3058,9 +3082,10 @@ static int
 chain_finalized_object(st_data_t key, st_data_t val, st_data_t arg)
 {
     RVALUE *p = (RVALUE *)key, **final_list = (RVALUE **)arg;
-    if ((p->as.basic.flags & (FL_FINALIZE|FL_MARK)) == FL_FINALIZE) {
+    if ((p->as.basic.flags & FL_FINALIZE) == FL_FINALIZE &&
+        !MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
 	if (BUILTIN_TYPE(p) != T_ZOMBIE) {
-	    p->as.free.flags = FL_MARK | T_ZOMBIE; /* remain marked */
+	    p->as.free.flags = T_ZOMBIE;
 	    RDATA(p)->dfree = 0;
 	}
 	p->as.free.next = *final_list;
@@ -3192,7 +3217,7 @@ static inline int
 is_dead_object(rb_objspace_t *objspace, VALUE ptr)
 {
     struct heaps_slot *slot = objspace->heap.sweep_slots;
-    if (!is_lazy_sweeping(objspace) || (RBASIC(ptr)->flags & FL_MARK))
+    if (!is_lazy_sweeping(objspace) || MARKED_IN_BITMAP(GET_HEAP_BITMAP(ptr), ptr))
 	return FALSE;
     while (slot) {
 	if ((VALUE)slot->slot <= ptr && ptr < (VALUE)(slot->slot + slot->limit))
@@ -3723,6 +3748,7 @@ gc_test(VALUE self)
     void *p;
     rb_objspace_t *objspace = &rb_objspace;
 
+    puts("---- gc_test ----");
     {
         puts("= aligned_malloc/aligned_free");
         p = aligned_malloc(HEAP_SIZE);
@@ -3754,10 +3780,18 @@ gc_test(VALUE self)
         assert(0 == BITMAP_INDEX(first));
         assert(NUM_IN_SLOT(first) == BITMAP_OFFSET(first));
         assert(HEAP_HEADER(heaps->membase) ==
-               GET_HEAP_HEADER(first, HEAP_ALIGN_MASK));
-        MARK_IN_BITMAP(GET_HEAP_BITMAP(first, HEAP_ALIGN_MASK), first);
-        assert(MARKED_IN_BITMAP(GET_HEAP_BITMAP(first, HEAP_ALIGN_MASK), first));
+               GET_HEAP_HEADER(first));
+        MARK_IN_BITMAP(GET_HEAP_BITMAP(first), first);
+        assert(MARKED_IN_BITMAP(GET_HEAP_BITMAP(first), first));
     }
+
+    {
+        puts("= gc_clear_slot_bits");
+        gc_clear_slot_bits(heaps);
+        assert(0 == GET_HEAP_BITMAP(heaps->slot)[0]);
+        assert(0 == GET_HEAP_BITMAP(heaps->slot)[HEAP_BITMAP_LIMIT-1]);
+    }
+    puts("---- done ----");
     return Qnil;
 }
 #endif
