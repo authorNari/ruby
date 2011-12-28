@@ -2408,7 +2408,7 @@ rb_gc_force_recycle(VALUE p)
     rb_objspace_t *objspace = &rb_objspace;
     struct heaps_slot *slot;
 
-    if (!MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
+    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
         add_slot_local_freelist(objspace, (RVALUE *)p);
     }
     else {
