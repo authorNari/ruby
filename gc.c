@@ -2075,7 +2075,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 
 static int obj_free(rb_objspace_t *, VALUE);
 
-static inline struct heap_slot *
+static inline struct heaps_slot *
 add_slot_local_freelist(rb_objspace_t *objspace, RVALUE *p)
 {
     struct heaps_slot *slot;
@@ -2407,6 +2407,7 @@ rb_gc_force_recycle(VALUE p)
 {
     rb_objspace_t *objspace = &rb_objspace;
     struct heaps_slot *slot;
+
     if (!MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
         add_slot_local_freelist(objspace, (RVALUE *)p);
     }
