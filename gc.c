@@ -2075,7 +2075,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 
 static int obj_free(rb_objspace_t *, VALUE);
 
-static inline void
+static inline struct heap_slot *
 add_slot_local_freelist(rb_objspace_t *objspace, RVALUE *p)
 {
     struct heaps_slot *slot;
@@ -2085,6 +2085,8 @@ add_slot_local_freelist(rb_objspace_t *objspace, RVALUE *p)
     slot = GET_HEAP_HEADER(p)->base;
     p->as.free.next = slot->freelist;
     slot->freelist = p;
+
+    return slot;
 }
 
 static void
@@ -2404,8 +2406,17 @@ void
 rb_gc_force_recycle(VALUE p)
 {
     rb_objspace_t *objspace = &rb_objspace;
-    GC_PROF_DEC_LIVE_NUM;
-    add_slot_local_freelist(objspace, (RVALUE *)p);
+    struct heaps_slot *slot;
+    if (!MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
+        add_slot_local_freelist(objspace, (RVALUE *)p);
+    }
+    else {
+        GC_PROF_DEC_LIVE_NUM;
+        slot = add_slot_local_freelist(objspace, (RVALUE *)p);
+        if (slot->free_next == NULL && slot->free_prev == NULL) {
+            link_free_heap_slot(objspace, slot);
+        }
+    }
 }
 
 static inline void
