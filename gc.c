@@ -2076,7 +2076,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 static int obj_free(rb_objspace_t *, VALUE);
 
 static inline void
-add_freelist(rb_objspace_t *objspace, RVALUE *p, int add_free_slots)
+add_slot_local_freelist(rb_objspace_t *objspace, RVALUE *p)
 {
     struct heaps_slot *slot;
 
@@ -2085,11 +2085,6 @@ add_freelist(rb_objspace_t *objspace, RVALUE *p, int add_free_slots)
     slot = GET_HEAP_HEADER(p)->base;
     p->as.free.next = slot->freelist;
     slot->freelist = p;
-    if (add_free_slots) {
-        if (slot->free_next == NULL && slot->free_prev == NULL) {
-            link_free_heap_slot(objspace, slot);
-        }
-    }
 }
 
 static void
@@ -2099,12 +2094,9 @@ finalize_list(rb_objspace_t *objspace, RVALUE *p)
 	RVALUE *tmp = p->as.free.next;
 	run_final(objspace, (VALUE)p);
 	if (!FL_TEST(p, FL_SINGLETON)) { /* not freeing page */
-            if (objspace->heap.sweep_slots) {
-                add_freelist(objspace, p, FALSE);
-            }
-            else {
+            add_slot_local_freelist(objspace, p);
+            if (!is_lazy_sweeping(objspace)) {
                 GC_PROF_DEC_LIVE_NUM;
-                add_freelist(objspace, p, TRUE);
             }
 	}
 	else {
@@ -2210,7 +2202,10 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
                     final_num++;
                 }
                 else {
-                    add_freelist(objspace, p, TRUE);
+                    VALGRIND_MAKE_MEM_UNDEFINED((void*)p, sizeof(RVALUE));
+                    p->as.free.flags = 0;
+                    p->as.free.next = sweep_slot->freelist;
+                    sweep_slot->freelist = p;
                     free_num++;
                 }
             }
@@ -2234,6 +2229,10 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
         unlink_free_heap_slot(objspace, sweep_slot);
     }
     else {
+        if (free_num > 0 && sweep_slot->free_next == NULL &&
+            sweep_slot->free_prev == NULL) {
+            link_free_heap_slot(objspace, sweep_slot);
+        }
         objspace->heap.free_num += free_num;
     }
     objspace->heap.final_num += final_num;
@@ -2406,12 +2405,7 @@ rb_gc_force_recycle(VALUE p)
 {
     rb_objspace_t *objspace = &rb_objspace;
     GC_PROF_DEC_LIVE_NUM;
-    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p)) {
-        add_freelist(objspace, (RVALUE *)p, FALSE);
-    }
-    else {
-        add_freelist(objspace, (RVALUE *)p, TRUE);
-    }
+    add_slot_local_freelist(objspace, (RVALUE *)p);
 }
 
 static inline void
