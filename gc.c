@@ -2167,13 +2167,8 @@ free_unused_heaps(rb_objspace_t *objspace)
 static void
 gc_clear_slot_bits(struct heaps_slot *slot)
 {
-    size_t i;
-    uintptr_t *bits;
-
-    bits = GET_HEAP_BITMAP(slot->slot);
-    for (i=0; i<HEAP_BITMAP_LIMIT; i++) {
-        bits[i] = 0;
-    }
+    memset(GET_HEAP_BITMAP(slot->slot), 0,
+           HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
 }
 
 static void
