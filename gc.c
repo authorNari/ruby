@@ -308,7 +308,6 @@ typedef struct RVALUE {
 #endif
 
 struct heaps_slot {
-    void *membase;
     RVALUE *slot;
     size_t limit;
     uintptr_t *bits;
@@ -323,11 +322,6 @@ struct sorted_heaps_slot {
     RVALUE *start;
     RVALUE *end;
     struct heaps_slot *slot;
-};
-
-struct heaps_header {
-    struct heaps_slot *base;
-    uintptr_t *bits;
 };
 
 struct heaps_free_bitmap {
@@ -431,7 +425,7 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 
 #define nonspecial_obj_id(obj) (VALUE)((SIGNED_VALUE)(obj)|FIXNUM_FLAG)
 
-#define HEAP_HEADER(p) ((struct heaps_header *)(p))
+#define HEAP_SLOT(p) ((struct heaps_slot *)(p))
 
 static void rb_objspace_call_finalizer(rb_objspace_t *objspace);
 
@@ -524,8 +518,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	size_t i;
 	for (i = 0; i < heaps_used; ++i) {
             free(objspace->heap.sorted[i].slot->bits);
-	    aligned_free(objspace->heap.sorted[i].slot->membase);
-	    free(objspace->heap.sorted[i].slot);
+	    aligned_free(objspace->heap.sorted[i].slot);
 	}
 	free(objspace->heap.sorted);
 	heaps_used = 0;
@@ -541,11 +534,11 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_ALIGN_MASK 0x3fff
 #define HEAP_SIZE HEAP_ALIGN
 
-#define HEAP_OBJ_LIMIT (HEAP_SIZE / (unsigned int)sizeof(struct RVALUE) - 1)
+#define HEAP_OBJ_LIMIT (HEAP_SIZE/(unsigned int)sizeof(struct RVALUE) - (sizeof(struct heaps_slot)/(unsigned int)sizeof(struct RVALUE)+1))
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 
-#define GET_HEAP_HEADER(x) (HEAP_HEADER(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
-#define GET_HEAP_BITMAP(x) (GET_HEAP_HEADER(x)->bits)
+#define GET_HEAP_SLOT(x) (HEAP_SLOT(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
+#define GET_HEAP_BITMAP(x) (GET_HEAP_SLOT(x)->bits)
 #define NUM_IN_SLOT(p) (((uintptr_t)p & HEAP_ALIGN_MASK)/sizeof(RVALUE))
 #define BITMAP_INDEX(p) (NUM_IN_SLOT(p) / (sizeof(uintptr_t) * 8))
 #define BITMAP_OFFSET(p) (NUM_IN_SLOT(p) & ((sizeof(uintptr_t) * 8)-1))
@@ -1145,12 +1138,7 @@ assign_heap_slot(rb_objspace_t *objspace)
 	during_gc = 0;
 	rb_memerror();
     }
-    slot = (struct heaps_slot *)malloc(sizeof(struct heaps_slot));
-    if (slot == 0) {
-	aligned_free(p);
-	during_gc = 0;
-	rb_memerror();
-    }
+    slot = (struct heaps_slot *)p;
     MEMZERO((void*)slot, struct heaps_slot, 1);
 
     slot->next = heaps;
@@ -1158,7 +1146,7 @@ assign_heap_slot(rb_objspace_t *objspace)
     heaps = slot;
 
     membase = p;
-    p = (RVALUE*)((VALUE)p + sizeof(struct heaps_header));
+    p = (RVALUE*)((VALUE)p + sizeof(struct heaps_slot));
     if ((VALUE)p % sizeof(RVALUE) != 0) {
        p = (RVALUE*)((VALUE)p + sizeof(RVALUE) - ((VALUE)p % sizeof(RVALUE)));
        if ((HEAP_SIZE - HEAP_OBJ_LIMIT * sizeof(RVALUE)) < (size_t)((char*)p - (char*)membase)) {
@@ -1171,7 +1159,7 @@ assign_heap_slot(rb_objspace_t *objspace)
     while (lo < hi) {
 	register RVALUE *mid_membase;
 	mid = (lo + hi) / 2;
-	mid_membase = objspace->heap.sorted[mid].slot->membase;
+	mid_membase = (void *)objspace->heap.sorted[mid].slot;
 	if (mid_membase < membase) {
 	    lo = mid + 1;
 	}
@@ -1188,14 +1176,11 @@ assign_heap_slot(rb_objspace_t *objspace)
     objspace->heap.sorted[hi].slot = slot;
     objspace->heap.sorted[hi].start = p;
     objspace->heap.sorted[hi].end = (p + objs);
-    heaps->membase = membase;
     heaps->slot = p;
     heaps->limit = objs;
     assert(objspace->heap.free_bitmap != NULL);
     heaps->bits = (uintptr_t *)objspace->heap.free_bitmap;
     objspace->heap.free_bitmap = objspace->heap.free_bitmap->next;
-    HEAP_HEADER(membase)->base = heaps;
-    HEAP_HEADER(membase)->bits = heaps->bits;
     memset(heaps->bits, 0, HEAP_BITMAP_LIMIT * sizeof(uintptr_t));
     objspace->heap.free_num += objs;
     pend = p + objs;
@@ -2082,7 +2067,7 @@ add_slot_local_freelist(rb_objspace_t *objspace, RVALUE *p)
 
     VALGRIND_MAKE_MEM_UNDEFINED((void*)p, sizeof(RVALUE));
     p->as.free.flags = 0;
-    slot = GET_HEAP_HEADER(p)->base;
+    slot = GET_HEAP_SLOT(p);
     p->as.free.next = slot->freelist;
     slot->freelist = p;
 
@@ -2132,18 +2117,16 @@ free_unused_heaps(rb_objspace_t *objspace)
 
     for (i = j = 1; j < heaps_used; i++) {
 	if (objspace->heap.sorted[i].slot->limit == 0) {
-            struct heaps_header* h =
-                HEAP_HEADER(objspace->heap.sorted[i].slot->membase);
-            ((struct heaps_free_bitmap *)(h)->bits)->next =
+            struct heaps_slot* h = objspace->heap.sorted[i].slot;
+            ((struct heaps_free_bitmap *)(h->bits))->next =
                 objspace->heap.free_bitmap;
             objspace->heap.free_bitmap = (struct heaps_free_bitmap *)h->bits;
 	    if (!last) {
-		last = objspace->heap.sorted[i].slot->membase;
+		last = (RVALUE *)objspace->heap.sorted[i].slot;
 	    }
 	    else {
-		aligned_free(objspace->heap.sorted[i].slot->membase);
+		aligned_free(objspace->heap.sorted[i].slot);
 	    }
-            free(objspace->heap.sorted[i].slot);
 	    heaps_used--;
 	}
 	else {
@@ -2806,13 +2789,13 @@ objspace_each_objects(VALUE arg)
 
     i = 0;
     while (i < heaps_used) {
-	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1].slot->membase)
+	while (0 < i && (uintptr_t)membase < (uintptr_t)objspace->heap.sorted[i-1].slot)
 	    i--;
-	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i].slot->membase <= (uintptr_t)membase)
+	while (i < heaps_used && (uintptr_t)objspace->heap.sorted[i].slot <= (uintptr_t)membase)
 	    i++;
 	if (heaps_used <= i)
 	  break;
-	membase = objspace->heap.sorted[i].slot->membase;
+	membase = (RVALUE *)objspace->heap.sorted[i].slot;
 
 	pstart = objspace->heap.sorted[i].slot->slot;
 	pend = pstart + objspace->heap.sorted[i].slot->limit;
@@ -3841,8 +3824,7 @@ gc_test(VALUE self)
 
         assert(0 == BITMAP_INDEX(first));
         assert(NUM_IN_SLOT(first) == BITMAP_OFFSET(first));
-        assert(HEAP_HEADER(heaps->membase) ==
-               GET_HEAP_HEADER(first));
+        assert(heaps == GET_HEAP_SLOT(first));
         MARK_IN_BITMAP(GET_HEAP_BITMAP(first), first);
         assert(MARKED_IN_BITMAP(GET_HEAP_BITMAP(first), first));
     }
