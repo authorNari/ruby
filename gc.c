@@ -1075,7 +1075,9 @@ aligned_malloc(size_t aligned_size)
 {
     void *res;
 
-#if _WIN32 || defined __CYGWIN__
+#if __MINGW32__
+    res = __mingw_aligned_malloc(aligned_size, aligned_size);
+#elif _WIN32 || defined __CYGWIN__
     res = _aligned_malloc(aligned_size, aligned_size);
 #else
 # if _POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600
@@ -1094,7 +1096,9 @@ aligned_malloc(size_t aligned_size)
 static void
 aligned_free(void *ptr)
 {
-#if _WIN32 || defined __CYGWIN__
+#if __MINGW32__
+    __mingw_aligned_free(ptr);
+#elif _WIN32 || defined __CYGWIN__
     _aligned_free(ptr);
 #else
     free(ptr);
