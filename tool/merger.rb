@@ -58,7 +58,8 @@ def interactive str
 end
 
 def version_up
-  d = Date.today
+  d = DateTime.now
+  d = d.new_offset(Rational(9,24)) # we need server locale (i.e. japanese) time
   system *%w'svn revert version.h'
   v, p = version
 
@@ -131,9 +132,9 @@ else
 
   revs.each do |rev|
     case rev
-    when /\A\d+:\d+\z/
+    when /\Ar?\d+:r?\d+\z/
       r = ['-r', rev]
-    when /\A\d+\z/
+    when /\Ar?\d+\z/
       r = ['-c', rev]
     when nil then
       puts "#$0 revision"

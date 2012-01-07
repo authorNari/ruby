@@ -43,6 +43,10 @@ class TestBigDecimal < Test::Unit::TestCase
                  "Expected #{x.inspect} to be negative zero")
   end
 
+  def test_not_equal
+    assert_not_equal BigDecimal("1"), BigDecimal.allocate
+  end
+
   def test_global_new
     assert_equal(1, BigDecimal("1"))
     assert_equal(1, BigDecimal("1", 1))
@@ -1283,5 +1287,20 @@ class TestBigDecimal < Test::Unit::TestCase
         end
       end
     end
+  end
+
+  def test_dup
+    [1, -1, 2**100, -2**100].each do |i|
+      x = BigDecimal(i)
+      assert_equal(x, x.dup)
+    end
+  end
+
+  def test_dup_subclass
+    c = Class.new(BigDecimal)
+    x = c.new(1)
+    y = x.dup
+    assert_equal(1, y)
+    assert_kind_of(c, y)
   end
 end

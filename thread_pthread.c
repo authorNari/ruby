@@ -24,6 +24,9 @@
 #elif HAVE_SYS_FCNTL_H
 #include <sys/fcntl.h>
 #endif
+#if HAVE_SYS_PRCTL_H
+#include <sys/prctl.h>
+#endif
 
 static void native_mutex_lock(pthread_mutex_t *lock);
 static void native_mutex_unlock(pthread_mutex_t *lock);
@@ -35,6 +38,7 @@ static void native_cond_broadcast(rb_thread_cond_t *cond);
 static void native_cond_wait(rb_thread_cond_t *cond, pthread_mutex_t *mutex);
 static void native_cond_initialize(rb_thread_cond_t *cond, int flags);
 static void native_cond_destroy(rb_thread_cond_t *cond);
+static pthread_t timer_thread_id;
 
 #define RB_CONDATTR_CLOCK_MONOTONIC 1
 
@@ -1015,11 +1019,12 @@ ubf_select(void *ptr)
 {
     rb_thread_t *th = (rb_thread_t *)ptr;
     add_signal_thread_list(th);
-    rb_thread_wakeup_timer_thread(); /* activate timer thread */
+    if (pthread_self() != timer_thread_id)
+	rb_thread_wakeup_timer_thread(); /* activate timer thread */
     ubf_select_each(th);
 }
 
-static int
+static void
 ping_signal_thread_list(void) {
     if (signal_thread_list_anchor.next) {
 	FGLOCK(&signal_thread_list_lock, {
@@ -1031,20 +1036,25 @@ ping_signal_thread_list(void) {
 		list = list->next;
 	    }
 	});
-	return 1;
-    }
-    else {
-	return 0;
     }
 }
+
+static int
+check_signal_thread_list(void)
+{
+    if (signal_thread_list_anchor.next)
+	return 1;
+    else
+	return 0;
+}
 #else /* USE_SIGNAL_THREAD_LIST */
-static void add_signal_thread_list(rb_thread_t *th) { }
-static void remove_signal_thread_list(rb_thread_t *th) { }
+#define add_signal_thread_list(th) (void)(th)
+#define remove_signal_thread_list(th) (void)(th)
 #define ubf_select 0
-static int ping_signal_thread_list(void) { return 0; }
+static void ping_signal_thread_list(void) { return; }
+static int check_signal_thread_list(void) { return 0; }
 #endif /* USE_SIGNAL_THREAD_LIST */
 
-static pthread_t timer_thread_id;
 static int timer_thread_pipe[2] = {-1, -1};
 static int timer_thread_pipe_owner_process;
 
@@ -1127,13 +1137,18 @@ thread_timer(void *p)
 
     if (TT_DEBUG) WRITE_CONST(2, "start timer thread\n");
 
+#if defined(__linux__) && defined(PR_SET_NAME)
+    prctl(PR_SET_NAME, "ruby-timer-thr");
+#endif
+
     while (system_working > 0) {
 	fd_set rfds;
 	int need_polling;
 
 	/* timer function */
-	need_polling = ping_signal_thread_list();
+	ping_signal_thread_list();
 	timer_thread_function(0);
+	need_polling = check_signal_thread_list();
 
 	if (TT_DEBUG) WRITE_CONST(2, "tick\n");
 
@@ -1236,6 +1251,7 @@ rb_thread_create_timer_thread(void)
 	    fprintf(stderr, "[FATAL] Failed to create timer thread (errno: %d)\n", err);
 	    exit(EXIT_FAILURE);
 	}
+	pthread_attr_destroy(&attr);
     }
 }
 

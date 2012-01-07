@@ -154,6 +154,8 @@ enum node_type {
 #define NODE_ARGS_AUX    NODE_ARGS_AUX
     NODE_OPT_ARG,
 #define NODE_OPT_ARG     NODE_OPT_ARG
+    NODE_KW_ARG,
+#define NODE_KW_ARG	 NODE_KW_ARG
     NODE_POSTARG,
 #define NODE_POSTARG     NODE_POSTARG
     NODE_ARGSCAT,
@@ -253,6 +255,7 @@ typedef struct RNode {
 	ID id;
 	long state;
 	struct rb_global_entry *entry;
+	struct rb_args_info *args;
 	long cnt;
 	VALUE value;
     } u3;
@@ -321,6 +324,7 @@ typedef struct RNode {
 #define nd_recv  u1.node
 #define nd_mid   u2.id
 #define nd_args  u3.node
+#define nd_ainfo u3.args
 
 #define nd_noex  u3.id
 #define nd_defn  u3.node
@@ -362,7 +366,7 @@ typedef struct RNode {
 #define NEW_UNTIL(c,b,n) NEW_NODE(NODE_UNTIL,c,b,n)
 #define NEW_FOR(v,i,b) NEW_NODE(NODE_FOR,v,b,i)
 #define NEW_ITER(a,b) NEW_NODE(NODE_ITER,0,NEW_SCOPE(a,b),0)
-#define NEW_LAMBDA(a) NEW_NODE(NODE_LAMBDA,a,0,0)
+#define NEW_LAMBDA(a,b) NEW_NODE(NODE_LAMBDA,0,NEW_SCOPE(a,b),0)
 #define NEW_BREAK(s) NEW_NODE(NODE_BREAK,s,0,0)
 #define NEW_NEXT(s) NEW_NODE(NODE_NEXT,s,0,0)
 #define NEW_REDO() NEW_NODE(NODE_REDO,0,0,0)
@@ -415,9 +419,9 @@ typedef struct RNode {
 #define NEW_VCALL(m) NEW_NODE(NODE_VCALL,0,m,0)
 #define NEW_SUPER(a) NEW_NODE(NODE_SUPER,0,0,a)
 #define NEW_ZSUPER() NEW_NODE(NODE_ZSUPER,0,0,0)
-#define NEW_ARGS(m,o) NEW_NODE(NODE_ARGS,o,m,0)
 #define NEW_ARGS_AUX(r,b) NEW_NODE(NODE_ARGS_AUX,r,b,0)
 #define NEW_OPT_ARG(i,v) NEW_NODE(NODE_OPT_ARG,i,v,0)
+#define NEW_KW_ARG(i,v) NEW_NODE(NODE_KW_ARG,i,v,0)
 #define NEW_POSTARG(i,v) NEW_NODE(NODE_POSTARG,i,v,0)
 #define NEW_ARGSCAT(a,b) NEW_NODE(NODE_ARGSCAT,a,b,0)
 #define NEW_ARGSPUSH(a,b) NEW_NODE(NODE_ARGSPUSH,a,b,0)
@@ -482,6 +486,24 @@ VALUE rb_gvar_get(struct rb_global_entry *);
 VALUE rb_gvar_set(struct rb_global_entry *, VALUE);
 VALUE rb_gvar_defined(struct rb_global_entry *);
 const struct kwtable *rb_reserved_word(const char *, unsigned int);
+
+struct rb_args_info {
+    NODE *pre_init;
+    NODE *post_init;
+
+    int pre_args_num;  /* count of mandatory pre-arguments */
+    int post_args_num; /* count of mandatory post-arguments */
+
+    ID first_post_arg;
+
+    ID rest_arg;
+    ID block_arg;
+
+    NODE *kw_args;
+    NODE *kw_rest_arg;
+
+    NODE *opt_args;
+};
 
 struct parser_params;
 void *rb_parser_malloc(struct parser_params *, size_t);

@@ -22,7 +22,7 @@ Rubyはテキスト処理関係の能力などに優れ，Perlと同じくらい
   + ダイナミックローディング (アーキテクチャによる)
   + 移植性が高い．多くのUnix-like/POSIX互換プラットフォーム上で
     動くだけでなく，Windows， Mac OS X，BeOSなどの上でも動く
-    cf. http://redmine.ruby-lang.org/wiki/ruby-19/SupportedPlatformsJa
+    cf. http://bugs.ruby-lang.org/projects/ruby-trunk/wiki/SupportedPlatformsJa
 
 * 入手法
 
@@ -42,6 +42,12 @@ Rubyはテキスト処理関係の能力などに優れ，Perlと同じくらい
 
   $ svn ls http://svn.ruby-lang.org/repos/ruby/branches/
 
+** Gitで
+
+SubversionのミラーをGitHubに公開しています．
+以下のコマンドでリポジトリを取得できます．
+
+  $ git clone git://github.com/ruby/ruby.git
 
 * ホームページ
 
@@ -109,9 +115,9 @@ Ruby拡張モジュールについて話し合うruby-extメーリングリス�
 
   5. makeを実行してコンパイルする
 
-  6. make testでテストを行う．
+  6. make checkでテストを行う．
 
-     「test succeeded」と表示されれば成功です．ただしテスト
+     「check succeeded」と表示されれば成功です．ただしテスト
      に成功しても完璧だと保証されている訳ではありません．
 
   7. make install

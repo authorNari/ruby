@@ -83,6 +83,7 @@ iseq_free(void *ptr)
 	    RUBY_FREE_UNLESS_NULL(iseq->ic_entries);
 	    RUBY_FREE_UNLESS_NULL(iseq->catch_table);
 	    RUBY_FREE_UNLESS_NULL(iseq->arg_opt_table);
+	    RUBY_FREE_UNLESS_NULL(iseq->arg_keyword_table);
 	    compile_data_free(iseq->compile_data);
 	}
 	ruby_xfree(ptr);
@@ -239,6 +240,7 @@ prepare_iseq_build(rb_iseq_t *iseq,
     iseq->type = type;
     iseq->arg_rest = -1;
     iseq->arg_block = -1;
+    iseq->arg_keyword = -1;
     iseq->klass = 0;
 
     /*
@@ -463,6 +465,7 @@ iseq_load(VALUE self, VALUE data, VALUE parent, VALUE opt)
     version2    = CHECK_INTEGER(rb_ary_entry(data, i++));
     format_type = CHECK_INTEGER(rb_ary_entry(data, i++));
     misc        = rb_ary_entry(data, i++); /* TODO */
+    ((void)magic, (void)version1, (void)version2, (void)format_type, (void)misc);
 
     name        = CHECK_STRING(rb_ary_entry(data, i++));
     filename    = CHECK_STRING(rb_ary_entry(data, i++));
@@ -1381,9 +1384,9 @@ rb_iseq_clone(VALUE iseqval, VALUE newcbase)
 VALUE
 rb_iseq_parameters(const rb_iseq_t *iseq, int is_proc)
 {
-    int i, r, s;
+    int i, r;
     VALUE a, args = rb_ary_new2(iseq->arg_size);
-    ID req, opt, rest, block;
+    ID req, opt, rest, block, key, keyrest;
 #define PARAM_TYPE(type) rb_ary_push(a = rb_ary_new2(2), ID2SYM(type))
 #define PARAM_ID(i) iseq->local_table[(i)]
 #define PARAM(i, type) (		      \
@@ -1409,8 +1412,10 @@ rb_iseq_parameters(const rb_iseq_t *iseq, int is_proc)
     r = iseq->arg_rest != -1 ? iseq->arg_rest :
 	iseq->arg_post_len > 0 ? iseq->arg_post_start :
 	iseq->arg_block != -1 ? iseq->arg_block :
+	iseq->arg_keyword != -1 ? iseq->arg_keyword :
 	iseq->arg_size;
-    for (s = i; i < r; i++) {
+    if (iseq->arg_keyword != -1) r -= iseq->arg_keywords;
+    for (; i < r; i++) {
 	PARAM_TYPE(opt);
 	if (rb_id2name(PARAM_ID(i))) {
 	    rb_ary_push(a, ID2SYM(PARAM_ID(i)));
@@ -1432,6 +1437,20 @@ rb_iseq_parameters(const rb_iseq_t *iseq, int is_proc)
     else {
 	for (i = iseq->arg_post_start; i < r; i++) {
 	    rb_ary_push(args, PARAM(i, req));
+	}
+    }
+    if (iseq->arg_keyword != -1) {
+	CONST_ID(key, "key");
+	for (i = 0; i < iseq->arg_keywords; i++) {
+	    PARAM_TYPE(key);
+	    if (rb_id2name(iseq->arg_keyword_table[i])) {
+		rb_ary_push(a, ID2SYM(iseq->arg_keyword_table[i]));
+	    }
+	    rb_ary_push(args, a);
+	}
+	if (rb_id2name(iseq->local_table[iseq->arg_keyword])) {
+	    CONST_ID(keyrest, "keyrest");
+	    rb_ary_push(args, PARAM(iseq->arg_keyword, keyrest));
 	}
     }
     if (iseq->arg_block != -1) {
@@ -1502,7 +1521,7 @@ rb_iseq_build_for_ruby2cext(
 void
 Init_ISeq(void)
 {
-    /* declare ::VM::InstructionSequence */
+    /* declare ::RubyVM::InstructionSequence */
     rb_cISeq = rb_define_class_under(rb_cRubyVM, "InstructionSequence", rb_cObject);
     rb_define_alloc_func(rb_cISeq, iseq_alloc);
     rb_define_method(rb_cISeq, "inspect", iseq_inspect, 0);

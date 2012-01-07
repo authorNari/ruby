@@ -96,6 +96,11 @@ module Test
           end
         end
 
+        opts.on '--separate', "Restart job process after one testcase has done" do
+          options[:parallel] ||= 1
+          options[:separate] = true
+        end
+
         opts.on '--no-retry', "Don't retry running testcase when --jobs specified" do
           options[:no_retry] = true
         end
@@ -243,6 +248,8 @@ module Test
           new(io, io.pid, :waiting)
         end
 
+        attr_reader :quit_called
+
         def initialize(io, pid, status)
           @io = io
           @pid = pid
@@ -251,6 +258,7 @@ module Test
           @real_file = nil
           @loadpath = []
           @hooks = {}
+          @quit_called = false
         end
 
         def puts(*args)
@@ -258,10 +266,10 @@ module Test
         end
 
         def run(task,type)
-          @file = File.basename(task).gsub(/\.rb/,"")
+          @file = File.basename(task, ".rb")
           @real_file = task
           begin
-            puts "loadpath #{[Marshal.dump($:-@loadpath)].pack("m").gsub("\n","")}"
+            puts "loadpath #{[Marshal.dump($:-@loadpath)].pack("m0")}"
             @loadpath = $:.dup
             puts "run #{task} #{type}"
             @status = :prepare
@@ -285,8 +293,17 @@ module Test
         end
 
         def close
-          @io.close
+          begin
+            @io.close unless @io.closed?
+          rescue IOError; end
           self
+        end
+
+        def quit
+          return if @io.closed?
+          @quit_called = true
+          @io.puts "quit"
+          @io.close
         end
 
         def died(*additional)
@@ -401,23 +418,25 @@ module Test
           rep = [] # FIXME: more good naming
 
           # Array of workers.
-          @workers = @options[:parallel].times.map {
+          launch_worker = Proc.new {
             worker = Worker.launch(@options[:ruby],@args)
             worker.hook(:dead) do |w,info|
               after_worker_quit w
-              after_worker_down w, *info unless info.empty?
+              after_worker_down w, *info if !info.empty? && !worker.quit_called
             end
             worker
           }
+          @workers = @options[:parallel].times.map(&launch_worker)
 
           # Thread: watchdog
           watchdog = Thread.new do
             while stat = Process.wait2
               break if @interrupt # Break when interrupt
               pid, stat = stat
-              w = (@workers + @dead_workers).find{|x| pid == x.pid }.dup
+              w = (@workers + @dead_workers).find{|x| pid == x.pid }
               next unless w
-              unless w.status == :quit
+              w = w.dup
+              if w.status != :quit && !w.quit_called?
                 # Worker down
                 w.died(nil, !stat.signaled? && stat.exitstatus)
               end
@@ -435,11 +454,25 @@ module Test
               when /^okay$/
                 worker.status = :running
                 jobs_status
-              when /^ready$/
+              when /^ready(!?)$/
+                bang = $1
                 worker.status = :ready
                 if @tasks.empty?
-                  break unless @workers.find{|x| x.status == :running }
+                  unless @workers.find{|x| [:running, :prepare].include? x.status}
+                    break
+                  end
                 else
+                  if @options[:separate] && bang.empty?
+                    @workers_hash.delete worker.io
+                    @workers.delete worker
+                    @ios.delete worker.io
+                    new_worker = launch_worker.call()
+                    worker.quit
+                    @workers << new_worker
+                    @ios << new_worker.io
+                    @workers_hash[new_worker.io] = new_worker
+                    worker = new_worker
+                  end
                   worker.run(@tasks.shift, type)
                 end
 
@@ -459,7 +492,7 @@ module Test
               when /^bye (.+?)$/
                 after_worker_down worker, Marshal.load($1.unpack("m")[0])
               when /^bye$/
-                if shutting_down
+                if shutting_down || worker.quit_called
                   after_worker_quit worker
                 else
                   after_worker_down worker
@@ -496,7 +529,7 @@ module Test
           @workers.each do |worker|
             begin
               timeout(1) do
-                worker.puts "quit"
+                worker.quit
               end
             rescue Errno::EPIPE
             rescue Timeout::Error
@@ -529,7 +562,7 @@ module Test
             rep.each do |r|
               if r[:testcase] && r[:file] && !r[:report].empty?
                 require r[:file]
-                _run_suite(eval(r[:testcase]),type)
+                _run_suite(eval("::"+r[:testcase]),type)
               else
                 report.push(*r[:report])
                 @errors += r[:result][0]

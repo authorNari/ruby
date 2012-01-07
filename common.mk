@@ -8,8 +8,6 @@ dll: $(LIBRUBY_SO)
 V = 0
 Q1 = $(V:1=)
 Q = $(Q1:0=@)
-n=$(NULLCMD)
-ECHO1 = $(V:1=@$n)
 ECHO = $(ECHO1:0=@echo)
 
 RUBYLIB       = -
@@ -123,7 +121,8 @@ INSTRUBY      =	$(SUDO) $(MINIRUBY) $(srcdir)/tool/rbinstall.rb
 INSTRUBY_ARGS =	$(SCRIPT_ARGS) \
 		--data-mode=$(INSTALL_DATA_MODE) \
 		--prog-mode=$(INSTALL_PROG_MODE) \
-		--installed-list $(INSTALLED_LIST)
+		--installed-list $(INSTALLED_LIST) \
+		--mantype="$(MANTYPE)"
 INSTALL_PROG_MODE = 0755
 INSTALL_DATA_MODE = 0644
 
@@ -208,7 +207,7 @@ wprogram: showflags $(WPROGRAM)
 
 $(PROGRAM): $(LIBRUBY) $(MAINOBJ) $(OBJS) $(EXTOBJS) $(SETUP) $(PREP)
 
-$(LIBRUBY_A):	$(OBJS) $(DMYEXT) $(ARCHFILE)
+$(LIBRUBY_A):	$(OBJS) $(MAINOBJ) $(DMYEXT) $(ARCHFILE)
 
 $(LIBRUBY_SO):	$(OBJS) $(DLDOBJS) $(LIBRUBY_A) $(PREP) $(LIBRUBY_SO_UPDATE) $(BUILTIN_ENCOBJS)
 
@@ -239,13 +238,13 @@ post-install-all:: post-install-local post-install-ext post-install-doc
 install-nodoc: pre-install-nodoc do-install-nodoc post-install-nodoc
 pre-install-nodoc:: pre-install-local pre-install-ext
 do-install-nodoc: $(PREP)
-	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --mantype="$(MANTYPE)"
+	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS)
 post-install-nodoc:: post-install-local post-install-ext
 
 install-local: pre-install-local do-install-local post-install-local
 pre-install-local:: pre-install-bin pre-install-lib pre-install-man
 do-install-local: $(PREP)
-	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=local --mantype="$(MANTYPE)"
+	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=local
 post-install-local:: post-install-bin post-install-lib post-install-man
 
 install-ext: pre-install-ext do-install-ext post-install-ext
@@ -297,7 +296,7 @@ post-install-ext-arch::
 install-man: pre-install-man do-install-man post-install-man
 pre-install-man:: install-prereq
 do-install-man: $(PREP)
-	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=man --mantype="$(MANTYPE)"
+	$(INSTRUBY) --make="$(MAKE)" $(INSTRUBY_ARGS) --install=man
 post-install-man::
 	@$(NULLCMD)
 
@@ -322,14 +321,14 @@ what-where-nodoc: no-install-nodoc
 no-install-nodoc: pre-no-install-nodoc dont-install-nodoc post-no-install-nodoc
 pre-no-install-nodoc:: pre-no-install-local pre-no-install-ext
 dont-install-nodoc:  $(PREP)
-	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --mantype="$(MANTYPE)"
+	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS)
 post-no-install-nodoc:: post-no-install-local post-no-install-ext
 
 what-where-local: no-install-local
 no-install-local: pre-no-install-local dont-install-local post-no-install-local
 pre-no-install-local:: pre-no-install-bin pre-no-install-lib pre-no-install-man
 dont-install-local: $(PREP)
-	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=local --mantype="$(MANTYPE)"
+	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=local
 post-no-install-local:: post-no-install-bin post-no-install-lib post-no-install-man
 
 what-where-ext: no-install-ext
@@ -389,7 +388,7 @@ what-where-man: no-install-man
 no-install-man: pre-no-install-man dont-install-man post-no-install-man
 pre-no-install-man:: install-prereq
 dont-install-man: $(PREP)
-	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=man --mantype="$(MANTYPE)"
+	$(INSTRUBY) -n --make="$(MAKE)" $(INSTRUBY_ARGS) --install=man
 post-no-install-man::
 	@$(NULLCMD)
 
@@ -461,6 +460,7 @@ realclean-extout: distclean-extout
 clean-enc distclean-enc realclean-enc: PHONY
 
 check: test test-all
+	$(ECHO) check succeeded
 check-ruby: test test-ruby
 
 btest: miniruby$(EXEEXT) $(TEST_RUNNABLE)-btest
@@ -964,5 +964,5 @@ help: PHONY
 	"  golf:            for golfers" \
 	"" \
 	"see DeveloperHowto for more detail: " \
-	"  http://redmine.ruby-lang.org/wiki/ruby/DeveloperHowto" \
+	"  http://bugs.ruby-lang.org/wiki/ruby/DeveloperHowto" \
 	$(MESSAGE_END)

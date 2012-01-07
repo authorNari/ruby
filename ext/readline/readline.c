@@ -40,6 +40,10 @@
 #include <unistd.h>
 #endif
 
+#ifdef HAVE_SYS_STAT_H
+#include <sys/stat.h>
+#endif
+
 static VALUE mReadline;
 
 #define EDIT_LINE_LIBRARY_VERSION "EditLine wrapper"
@@ -70,6 +74,9 @@ static ID id_orig_prompt, id_last_prompt;
 
 static int (*history_get_offset_func)(int);
 static int (*history_replace_offset_func)(int);
+#ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
+static int readline_completion_append_character;
+#endif
 
 static char **readline_attempted_completion_function(const char *text,
                                                      int start, int end);
@@ -258,6 +265,9 @@ insert_ignore_escape(VALUE self, VALUE prompt)
 static VALUE
 readline_get(VALUE prompt)
 {
+#ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
+    readline_completion_append_character = rl_completion_append_character;
+#endif
     return (VALUE)readline((char *)prompt);
 }
 
@@ -366,6 +376,13 @@ readline_readline(int argc, VALUE *argv, VALUE self)
     }
 
     if (!isatty(fileno(rl_instream)) && errno == EBADF) rb_raise(rb_eIOError, "closed stdin");
+    if (rl_outstream) {
+	struct stat stbuf;
+	int fd = fileno(rl_outstream);
+	if (fd < 0 || fstat(fd, &stbuf) != 0) {
+	    rb_raise(rb_eIOError, "closed stdout");
+	}
+    }
 
 #ifdef _WIN32
     rl_prep_terminal(1);
@@ -642,6 +659,9 @@ readline_attempted_completion_function(const char *text, int start, int end)
     proc = rb_attr_get(mReadline, completion_proc);
     if (NIL_P(proc))
 	return NULL;
+#ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
+    rl_completion_append_character = readline_completion_append_character;
+#endif
 #ifdef HAVE_RL_ATTEMPTED_COMPLETION_OVER
     rl_attempted_completion_over = 1;
 #endif
@@ -1495,6 +1515,16 @@ Init_readline()
     /* Allow conditional parsing of the ~/.inputrc file. */
     rl_readline_name = (char *)"Ruby";
 
+#if defined HAVE_RL_GETC_FUNCTION
+    /* libedit check rl_getc_function only when rl_initialize() is called, */
+    /* and using_history() call rl_initialize(). */
+    /* This assignment should be placed before using_history() */
+    rl_getc_function = readline_getc;
+    id_getbyte = rb_intern_const("getbyte");
+#elif defined HAVE_RL_EVENT_HOOK
+    rl_event_hook = readline_event;
+#endif
+
     using_history();
 
     completion_proc = rb_intern(COMPLETION_PROC);
@@ -1640,12 +1670,6 @@ Init_readline()
     rb_define_const(mReadline, "VERSION", version);
 
     rl_attempted_completion_function = readline_attempted_completion_function;
-#if defined HAVE_RL_GETC_FUNCTION
-    rl_getc_function = readline_getc;
-    id_getbyte = rb_intern_const("getbyte");
-#elif defined HAVE_RL_EVENT_HOOK
-    rl_event_hook = readline_event;
-#endif
 #ifdef HAVE_RL_CATCH_SIGNALS
     rl_catch_signals = 0;
 #endif

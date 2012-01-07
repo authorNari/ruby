@@ -126,6 +126,7 @@ extern DWORD rb_w32_osid(void);
 #undef fputchar
 #undef utime
 #undef lseek
+#undef stat
 #undef fstat
 #define getc(_stream)		rb_w32_getc(_stream)
 #define getchar()		rb_w32_getc(stdin)
@@ -273,7 +274,7 @@ extern int    rb_w32_urename(const char *, const char *);
 extern char **rb_w32_get_environ(void);
 extern void   rb_w32_free_environ(char **);
 extern int    rb_w32_map_errno(DWORD);
-extern char * WSAAPI rb_w32_inet_ntop(int,void *,char *,size_t);
+extern char * WSAAPI rb_w32_inet_ntop(int,const void *,char *,size_t);
 extern DWORD  rb_w32_osver(void);
 
 extern int chown(const char *, int, int);
@@ -303,6 +304,7 @@ extern int rb_w32_stati64(const char *, struct stati64 *);
 extern int rb_w32_ustati64(const char *, struct stati64 *);
 extern int rb_w32_access(const char *, int);
 extern int rb_w32_uaccess(const char *, int);
+extern char rb_w32_fd_is_text(int);
 
 #ifdef __BORLANDC__
 extern int rb_w32_fstati64(int, struct stati64 *);
@@ -688,7 +690,6 @@ struct tms {
 int rb_w32_times(struct tms *);
 
 /* thread stuff */
-HANDLE GetCurrentThreadHandle(void);
 int  rb_w32_sleep(unsigned long msec);
 int  rb_w32_putc(int, FILE*);
 int  rb_w32_getc(FILE*);

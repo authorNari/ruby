@@ -279,24 +279,7 @@ rb_w32_osver(void)
 #define IfWin95(win95, winnt) (winnt)
 #endif
 
-/* License: Ruby's */
-HANDLE
-GetCurrentThreadHandle(void)
-{
-    static HANDLE current_process_handle = NULL;
-    HANDLE h;
-
-    if (!current_process_handle)
-	current_process_handle = GetCurrentProcess();
-    if (!DuplicateHandle(current_process_handle, GetCurrentThread(),
-			 current_process_handle, &h,
-			 0, FALSE, DUPLICATE_SAME_ACCESS))
-	return NULL;
-    return h;
-}
-
 /* simulate flock by locking a range on the file */
-
 
 /* License: Artistic or GPL */
 #define LK_ERR(f,i) \
@@ -2156,10 +2139,10 @@ typedef struct	{
 
 #if !defined(__BORLANDC__)
 EXTERN_C _CRTIMP ioinfo * __pioinfo[];
+static inline ioinfo* _pioinfo(int);
 
 #define IOINFO_L2E			5
 #define IOINFO_ARRAY_ELTS	(1 << IOINFO_L2E)
-#define _pioinfo(i)	((ioinfo*)((char*)(__pioinfo[i >> IOINFO_L2E]) + (i & (IOINFO_ARRAY_ELTS - 1)) * (sizeof(ioinfo) + pioinfo_extra)))
 #define _osfhnd(i)  (_pioinfo(i)->osfhnd)
 #define _osfile(i)  (_pioinfo(i)->osfile)
 #define _pipech(i)  (_pioinfo(i)->pipech)
@@ -2189,6 +2172,14 @@ set_pioinfo_extra(void)
 #else
 #define pioinfo_extra 0
 #endif
+
+static inline ioinfo*
+_pioinfo(int fd)
+{
+    const size_t sizeof_ioinfo = sizeof(ioinfo) + pioinfo_extra;
+    return (ioinfo*)((char*)__pioinfo[fd >> IOINFO_L2E] +
+		     (fd & (IOINFO_ARRAY_ELTS - 1)) * sizeof_ioinfo);
+}
 
 #define _set_osfhnd(fh, osfh) (void)(_osfhnd(fh) = osfh)
 #define _set_osflags(fh, flags) (_osfile(fh) = (flags))
@@ -2261,7 +2252,7 @@ init_stdhandle(void)
     int keep = 0;
 #define open_null(fd)						\
     (((nullfd < 0) ?						\
-      (nullfd = open("NUL", O_RDWR|O_BINARY)) : 0),		\
+      (nullfd = open("NUL", O_RDWR)) : 0),		\
      ((nullfd == (fd)) ? (keep = 1) : dup2(nullfd, fd)),	\
      (fd))
 
@@ -2274,14 +2265,8 @@ init_stdhandle(void)
     if (fileno(stdout) < 0) {
 	stdout->_file = open_null(1);
     }
-    else {
-	setmode(fileno(stdout), O_BINARY);
-    }
     if (fileno(stderr) < 0) {
 	stderr->_file = open_null(2);
-    }
-    else {
-	setmode(fileno(stderr), O_BINARY);
     }
     if (nullfd >= 0 && !keep) close(nullfd);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -3818,8 +3803,9 @@ dupfd(HANDLE hDup, char flags, int minfd)
   close_fds_and_return:
     save_errno = errno;
     while (filled > 0) {
-	_osfhnd(fds[--filled]) = (intptr_t)INVALID_HANDLE_VALUE;
-	close(fds[filled]);
+	int fd = fds[--filled];
+	_osfhnd(fd) = (intptr_t)INVALID_HANDLE_VALUE;
+	close(fd);
     }
     errno = save_errno;
 
@@ -4489,7 +4475,20 @@ static int
 check_valid_dir(const WCHAR *path)
 {
     WIN32_FIND_DATAW fd;
-    HANDLE fh = open_dir_handle(path, &fd);
+    HANDLE fh;
+    WCHAR full[MAX_PATH];
+    WCHAR *dmy;
+
+    /* if the specified path is the root of a drive and the drive is empty, */
+    /* FindFirstFile() returns INVALID_HANDLE_VALUE. */
+    if (!GetFullPathNameW(path, sizeof(full) / sizeof(WCHAR), full, &dmy)) {
+	errno = map_errno(GetLastError());
+	return -1;
+    }
+    if (full[1] == L':' && !full[3] && GetDriveTypeW(full) != DRIVE_NO_ROOT_DIR)
+	return 0;
+
+    fh = open_dir_handle(path, &fd);
     if (fh == INVALID_HANDLE_VALUE)
 	return -1;
     FindClose(fh);
@@ -4876,6 +4875,10 @@ read(int fd, void *buf, size_t size)
     return ret;
 }
 #endif
+
+
+#define FILE_COUNT _cnt
+#define FILE_READPTR _ptr
 
 #undef fgetc
 /* License: Ruby's */
@@ -5618,7 +5621,8 @@ rb_w32_write(int fd, const void *buf, size_t size)
 	return -1;
     }
 
-    if (_osfile(fd) & FTEXT) {
+    if ((_osfile(fd) & FTEXT) &&
+        (!(_osfile(fd) & FPIPE) || fd == fileno(stdout) || fd == fileno(stderr))) {
 	return _write(fd, buf, size);
     }
 
@@ -6023,7 +6027,7 @@ rb_w32_uchmod(const char *path, int mode)
     WCHAR *wpath;
     int ret;
 
-    if (!(wpath = filecp_to_wstr(path, NULL)))
+    if (!(wpath = utf8_to_wstr(path, NULL)))
 	return -1;
     ret = _wchmod(wpath, mode);
     free(wpath);
@@ -6134,17 +6138,23 @@ signbit(double x)
 
 /* License: Ruby's */
 char * WSAAPI
-rb_w32_inet_ntop(int af, void *addr, char *numaddr, size_t numaddr_len)
+rb_w32_inet_ntop(int af, const void *addr, char *numaddr, size_t numaddr_len)
 {
     typedef char *(WSAAPI inet_ntop_t)(int, void *, char *, size_t);
     inet_ntop_t *pInetNtop;
     pInetNtop = (inet_ntop_t *)get_proc_address("ws2_32", "inet_ntop", NULL);
-    if(pInetNtop){
-       return pInetNtop(af,addr,numaddr,numaddr_len);
-    }else{
-       struct in_addr in;
-       memcpy(&in.s_addr, addr, sizeof(in.s_addr));
-       snprintf(numaddr, numaddr_len, "%s", inet_ntoa(in));
+    if (pInetNtop) {
+	return pInetNtop(af, (void *)addr, numaddr, numaddr_len);
+    }
+    else {
+	struct in_addr in;
+	memcpy(&in.s_addr, addr, sizeof(in.s_addr));
+	snprintf(numaddr, numaddr_len, "%s", inet_ntoa(in));
     }
     return numaddr;
+}
+
+char
+rb_w32_fd_is_text(int fd) {
+    return _osfile(fd) & FTEXT;
 }

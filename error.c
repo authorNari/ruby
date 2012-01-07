@@ -378,6 +378,32 @@ static const struct types {
     {T_UNDEF,	"undef"},	/* internal use: #undef; should not happen */
 };
 
+static const char *
+builtin_type_name(VALUE x)
+{
+    const char *etype;
+
+    if (NIL_P(x)) {
+	etype = "nil";
+    }
+    else if (FIXNUM_P(x)) {
+	etype = "Fixnum";
+    }
+    else if (SYMBOL_P(x)) {
+	etype = "Symbol";
+    }
+    else if (RB_TYPE_P(x, T_TRUE)) {
+	etype = "true";
+    }
+    else if (RB_TYPE_P(x, T_FALSE)) {
+	etype = "false";
+    }
+    else {
+	etype = rb_obj_classname(x);
+    }
+    return etype;
+}
+
 void
 rb_check_type(VALUE x, int t)
 {
@@ -396,22 +422,7 @@ rb_check_type(VALUE x, int t)
 	    if (type->type == t) {
 		const char *etype;
 
-		if (NIL_P(x)) {
-		    etype = "nil";
-		}
-		else if (FIXNUM_P(x)) {
-		    etype = "Fixnum";
-		}
-		else if (SYMBOL_P(x)) {
-		    etype = "Symbol";
-		}
-		else if (rb_special_const_p(x)) {
-		    x = rb_obj_as_string(x);
-		    etype = StringValuePtr(x);
-		}
-		else {
-		    etype = rb_obj_classname(x);
-		}
+		etype = builtin_type_name(x);
 		rb_raise(rb_eTypeError, "wrong argument type %s (expected %s)",
 			 etype, type->name);
 	    }
@@ -451,7 +462,8 @@ rb_check_typeddata(VALUE obj, const rb_data_type_t *data_type)
     static const char mesg[] = "wrong argument type %s (expected %s)";
 
     if (SPECIAL_CONST_P(obj) || BUILTIN_TYPE(obj) != T_DATA) {
-	Check_Type(obj, T_DATA);
+	etype = builtin_type_name(obj);
+	rb_raise(rb_eTypeError, mesg, etype, data_type->wrap_struct_name);
     }
     if (!RTYPEDDATA_P(obj)) {
 	etype = rb_obj_classname(obj);
@@ -743,18 +755,52 @@ exc_equal(VALUE exc, VALUE obj)
 
 /*
  * call-seq:
- *   SystemExit.new(status=0)   -> system_exit
+ *   SystemExit.new              -> system_exit
+ *   SystemExit.new(status)      -> system_exit
+ *   SystemExit.new(status, msg) -> system_exit
+ *   SystemExit.new(msg)         -> system_exit
  *
- * Create a new +SystemExit+ exception with the given status.
+ * Create a new +SystemExit+ exception with the given status and message.
+ * Status is true, false, or an integer.
+ * If status is not given, true is used.
  */
 
 static VALUE
 exit_initialize(int argc, VALUE *argv, VALUE exc)
 {
-    VALUE status = INT2FIX(EXIT_SUCCESS);
-    if (argc > 0 && FIXNUM_P(argv[0])) {
-	status = *argv++;
-	--argc;
+    VALUE status;
+    if (argc > 0) {
+	status = *argv;
+
+	switch (status) {
+	  case Qtrue:
+	    status = INT2FIX(EXIT_SUCCESS);
+	    ++argv;
+	    --argc;
+	    break;
+	  case Qfalse:
+	    status = INT2FIX(EXIT_FAILURE);
+	    ++argv;
+	    --argc;
+	    break;
+	  default:
+	    status = rb_check_to_int(status);
+	    if (NIL_P(status)) {
+		status = INT2FIX(EXIT_SUCCESS);
+	    }
+	    else {
+#if EXIT_SUCCESS != 0
+		if (status == INT2FIX(0))
+		    status = INT2FIX(EXIT_SUCCESS);
+#endif
+		++argv;
+		--argc;
+	    }
+	    break;
+	}
+    }
+    else {
+	status = INT2FIX(EXIT_SUCCESS);
     }
     rb_call_super(argc, argv);
     rb_iv_set(exc, "status", status);
@@ -978,6 +1024,7 @@ name_err_mesg_to_str(VALUE obj)
     else {
 	const char *desc = 0;
 	VALUE d = 0, args[NAME_ERR_MESG_COUNT];
+	int state = 0;
 
 	obj = ptr[1];
 	switch (TYPE(obj)) {
@@ -991,7 +1038,9 @@ name_err_mesg_to_str(VALUE obj)
 	    desc = "false";
 	    break;
 	  default:
-	    d = rb_protect(rb_inspect, obj, 0);
+	    d = rb_protect(rb_inspect, obj, &state);
+	    if (state)
+		rb_set_errinfo(Qnil);
 	    if (NIL_P(d) || RSTRING_LEN(d) > 65) {
 		d = rb_any_to_s(obj);
 	    }

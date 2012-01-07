@@ -426,6 +426,7 @@ validate_label(st_data_t name, st_data_t label, st_data_t arg)
 	    int ret;
 	    COMPILE_ERROR((ruby_sourcefile, lobj->position,
 			   "%s: undefined label", rb_id2name((ID)name)));
+	    if (ret) break;
 	} while (0);
     }
     return ST_CONTINUE;
@@ -1067,52 +1068,34 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *optargs, NODE *node_args)
     debugs("iseq_set_arguments: %s\n", node_args ? "" : "0");
 
     if (node_args) {
-	NODE *node_aux = node_args->nd_next;
-	NODE *node_opt = node_args->nd_opt;
+	struct rb_args_info *args = node_args->nd_ainfo;
 	ID rest_id = 0;
 	int last_comma = 0;
 	ID block_id = 0;
-	NODE *node_init = 0;
 
 	if (nd_type(node_args) != NODE_ARGS) {
 	    rb_bug("iseq_set_arguments: NODE_ARGS is expected, but %s",
 		   ruby_node_name(nd_type(node_args)));
 	}
 
-	/*
-         * new argument information:
-         *   NODE_ARGS     [m: int,  o: NODE_OPT_ARG, ->]
-         *   NODE_ARGS_AUX [r: ID,   b: ID,           ->]
-         *   NODE_ARGS_AUX [Pst: id, Plen: int,       init: NODE*]
-         *  optarg information:
-         *   NODE_OPT_ARGS [idx,     expr,            next ->]
-	 *  init arg:
-	 *   NODE_AND(m_init, p_init)
-	 *  if "r" is 1, it's means "{|x,|}" type block parameter.
-	 */
 
-	iseq->argc = (int)node_args->nd_frml;
+	iseq->argc = (int)args->pre_args_num;
 	debugs("  - argc: %d\n", iseq->argc);
 
-	if (node_aux) {
-	    rest_id = node_aux->nd_rest;
-	    if (rest_id == 1) {
-		last_comma = 1;
-		rest_id = 0;
-	    }
-	    block_id = (ID)node_aux->nd_body;
-	    node_aux = node_aux->nd_next;
+	rest_id = args->rest_arg;
+	if (rest_id == 1) {
+	    last_comma = 1;
+	    rest_id = 0;
+	}
+	block_id = args->block_arg;
 
-	    if (node_aux) {
-		ID post_start_id = node_aux->nd_pid;
-		iseq->arg_post_start = get_dyna_var_idx_at_raw(iseq, post_start_id);
-		iseq->arg_post_len = (int)node_aux->nd_plen;
-		node_init = node_aux->nd_next;
-	    }
+	if (args->first_post_arg) {
+	    iseq->arg_post_start = get_dyna_var_idx_at_raw(iseq, args->first_post_arg);
+	    iseq->arg_post_len = args->post_args_num;
 	}
 
-	if (node_opt) {
-	    NODE *node = node_opt;
+	if (args->opt_args) {
+	    NODE *node = args->opt_args;
 	    LABEL *label;
 	    VALUE labels = rb_ary_tmp_new(1);
 	    int i = 0, j;
@@ -1144,13 +1127,36 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *optargs, NODE *node_args)
 	    iseq->arg_opts = 0;
 	}
 
-	if (node_init) {
-	    if (node_init->nd_1st) { /* m_init */
-		COMPILE_POPED(optargs, "init arguments (m)", node_init->nd_1st);
+	if (args->kw_args) {
+	    NODE *node = args->kw_args;
+	    VALUE keywords = rb_ary_tmp_new(1);
+	    int i = 0, j;
+
+	    iseq->arg_keyword = get_dyna_var_idx_at_raw(iseq, args->kw_rest_arg->nd_vid);
+	    COMPILE(optargs, "kwarg", args->kw_rest_arg);
+	    while (node) {
+		rb_ary_push(keywords, INT2FIX(node->nd_body->nd_vid));
+		COMPILE_POPED(optargs, "kwarg", node); /* nd_type(node) == NODE_KW_ARG */
+		node = node->nd_next;
+		i += 1;
 	    }
-	    if (node_init->nd_2nd) { /* p_init */
-		COMPILE_POPED(optargs, "init arguments (p)", node_init->nd_2nd);
+	    iseq->arg_keyword_check = (args->kw_rest_arg->nd_vid & ID_SCOPE_MASK) == ID_JUNK;
+	    iseq->arg_keywords = i;
+	    iseq->arg_keyword_table = ALLOC_N(ID, i);
+	    for (j = 0; j < i; j++) {
+		iseq->arg_keyword_table[j] = FIX2INT(RARRAY_PTR(keywords)[j]);
 	    }
+	    ADD_INSN(optargs, nd_line(args->kw_args), pop);
+	}
+	else {
+	    iseq->arg_keyword = -1;
+	}
+
+	if (args->pre_init) { /* m_init */
+	    COMPILE_POPED(optargs, "init arguments (m)", args->pre_init);
+	}
+	if (args->post_init) { /* p_init */
+	    COMPILE_POPED(optargs, "init arguments (p)", args->post_init);
 	}
 
 	if (rest_id) {
@@ -1170,11 +1176,15 @@ iseq_set_arguments(rb_iseq_t *iseq, LINK_ANCHOR *optargs, NODE *node_args)
 	}
 
 	if (iseq->arg_opts != 0 || iseq->arg_post_len != 0 ||
-	    iseq->arg_rest != -1 || iseq->arg_block != -1) {
+	    iseq->arg_rest != -1 || iseq->arg_block != -1 ||
+	    iseq->arg_keyword != -1) {
 	    iseq->arg_simple = 0;
 
 	    /* set arg_size: size of arguments */
-	    if (iseq->arg_block != -1) {
+	    if (iseq->arg_keyword != -1) {
+		iseq->arg_size = iseq->arg_keyword + 1;
+	    }
+	    else if (iseq->arg_block != -1) {
 		iseq->arg_size = iseq->arg_block + 1;
 	    }
 	    else if (iseq->arg_post_len) {
@@ -3293,7 +3303,6 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 	VALUE prevblock = iseq->compile_data->current_block;
 	LABEL *retry_label = NEW_LABEL(nd_line(node));
 	LABEL *retry_end_l = NEW_LABEL(nd_line(node));
-	ID mid = 0;
 
 	ADD_LABEL(ret, retry_label);
 	if (nd_type(node) == NODE_FOR) {
@@ -3303,7 +3312,6 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 		NEW_CHILD_ISEQVAL(node->nd_body, make_name_for_block(iseq),
 				  ISEQ_TYPE_BLOCK, nd_line(node));
 
-	    mid = idEach;
 	    ADD_SEND_R(ret, nd_line(node), ID2SYM(idEach), INT2FIX(0),
 		       iseq->compile_data->current_block, INT2FIX(0));
 	}
@@ -4940,6 +4948,38 @@ iseq_compile_each(rb_iseq_t *iseq, LINK_ANCHOR *ret, NODE * node, int poped)
 	}
 	break;
       }
+      case NODE_KW_ARG:{
+	LABEL *default_label = NEW_LABEL(nd_line(node));
+	LABEL *end_label = NEW_LABEL(nd_line(node));
+	int idx, lv, ls;
+	ID id = node->nd_body->nd_vid;
+
+	ADD_INSN(ret, nd_line(node), dup);
+	ADD_INSN1(ret, nd_line(node), putobject, ID2SYM(id));
+	ADD_SEND(ret, nd_line(node), ID2SYM(rb_intern("key?")), INT2FIX(1));
+	ADD_INSNL(ret, nd_line(node), branchunless, default_label);
+	ADD_INSN(ret, nd_line(node), dup);
+	ADD_INSN1(ret, nd_line(node), putobject, ID2SYM(id));
+	ADD_SEND(ret, nd_line(node), ID2SYM(rb_intern("delete")), INT2FIX(1));
+	switch (nd_type(node->nd_body)) {
+	    case NODE_LASGN:
+		idx = iseq->local_iseq->local_size - get_local_var_idx(iseq, id);
+		ADD_INSN1(ret, nd_line(node), setlocal, INT2FIX(idx));
+		break;
+	    case NODE_DASGN:
+	    case NODE_DASGN_CURR:
+		idx = get_dyna_var_idx(iseq, id, &lv, &ls);
+		ADD_INSN2(ret, nd_line(node), setdynamic, INT2FIX(ls - idx), INT2FIX(lv));
+		break;
+	    default:
+		rb_bug("iseq_compile_each (NODE_KW_ARG): unknown node: %s", ruby_node_name(nd_type(node->nd_body)));
+	}
+	ADD_INSNL(ret, nd_line(node), jump, end_label);
+	ADD_LABEL(ret, default_label);
+	COMPILE_POPED(ret, "keyword default argument", node->nd_body);
+	ADD_LABEL(ret, end_label);
+	break;
+      }
       case NODE_DSYM:{
 	compile_dstr(iseq, ret, node);
 	if (!poped) {
@@ -5265,6 +5305,8 @@ iseq_build_from_ary_exception(rb_iseq_t *iseq, struct st_table *labels_table,
 	lend   = register_label(iseq, labels_table, ptr[3]);
 	lcont  = register_label(iseq, labels_table, ptr[4]);
 	sp     = NUM2INT(ptr[5]);
+
+	(void)sp;
 
 	ADD_CATCH_ENTRY(type, lstart, lend, eiseqval, lcont);
     }

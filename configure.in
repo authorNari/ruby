@@ -86,9 +86,7 @@ RUBY_PROGRAM_VERSION=`sed -n 's/^#define RUBY_VERSION "\(.*\)"/\1/p' $srcdir/ver
 AC_SUBST(RUBY_PROGRAM_VERSION)
 RUBY_RELEASE_DATE=`sed -n 's/^#define RUBY_RELEASE_DATE "\(.*\)"/\1/p' $srcdir/version.h`
 AC_SUBST(RUBY_RELEASE_DATE)
-if test "$MAJOR" = "1"; then
-  AC_DEFINE(CANONICALIZATION_FOR_MATHN)
-fi
+AC_DEFINE(CANONICALIZATION_FOR_MATHN)
 dnl checks for alternative programs
 AC_CANONICAL_BUILD
 AC_ARG_WITH(gcc,
@@ -147,7 +145,7 @@ AC_DEFUN([RUBY_PREPEND_OPTIONS],
 	$1="[$]{rb_opts}[$]$1"; }])
 
 AC_ARG_WITH(arch,
- 	AS_HELP_STRING([--with-arch=ARCHS],
+	AS_HELP_STRING([--with-arch=ARCHS],
 		       [build an Apple/NeXT Multi Architecture Binary (MAB);
                           ARCHS is a comma-delimited list of architectures for
                           which to build; if this option is disabled or omitted
@@ -418,6 +416,8 @@ dnl }
 dnl compiler section {
 
 AC_DEFUN([RUBY_WERROR_FLAG], [dnl
+save_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS $rb_cv_warnflags"
 if test "${ac_c_werror_flag+set}"; then
   rb_c_werror_flag="$ac_c_werror_flag"
 else
@@ -425,6 +425,8 @@ else
 fi
 ac_c_werror_flag=yes
 $1
+CFLAGS="$save_CFLAGS"
+save_CFLAGS=
 if test "${rb_c_werror_flag+set}"; then
   ac_c_werror_flag="$rb_c_werror_flag"
 else
@@ -432,24 +434,21 @@ else
 fi])
 
 AC_DEFUN(RUBY_TRY_CFLAGS, [
-    save_CFLAGS="$CFLAGS"
-    CFLAGS="[$]CFLAGS $1"
-    AC_MSG_CHECKING([whether ]$1[ is accepted])
+    AC_MSG_CHECKING([whether ]$1[ is accepted as CFLAGS])
     RUBY_WERROR_FLAG([
+    CFLAGS="[$]CFLAGS $1"
     AC_TRY_COMPILE([$4], [$5],
 	[$2
 	AC_MSG_RESULT(yes)],
 	[$3
 	AC_MSG_RESULT(no)])
     ])
-    CFLAGS="$save_CFLAGS"
-    save_CFLAGS=
 ])
 
 AC_DEFUN(RUBY_TRY_LDFLAGS, [
     save_LDFLAGS="$LDFLAGS"
     LDFLAGS="[$]LDFLAGS $1"
-    AC_MSG_CHECKING([whether $1 is accepted])
+    AC_MSG_CHECKING([whether $1 is accepted as LDFLAGS])
     RUBY_WERROR_FLAG([
     AC_TRY_LINK([$4], [$5],
 	[$2
@@ -488,13 +487,35 @@ if test "$GCC:${warnflags+set}:no" = yes::no; then
 	    ])
 	])
     done
-    AS_CASE([" $warnflags "],[*" -Wno-missing-field-initializers "*], [wflag=-Wextra],
+    AS_CASE([" $warnflags "],[*" -Wno-missing-field-initializers "*], [wflag="-Wall -Wextra"],
                              [wflag=-Wall])
     RUBY_TRY_CFLAGS($wflag, [warnflags="$wflag${warnflags+ $warnflags}"])
     # Disable warnflags while conftest. -Werror=* flags might make bad OS capability guess.
     rb_cv_warnflags="$warnflags"
     warnflags=
 fi
+if test "$GCC" = yes; then
+    # -D_FORTIFY_SOURCE
+    RUBY_TRY_CFLAGS(-D_FORTIFY_SOURCE=2, [RUBY_APPEND_OPTION(XCFLAGS, -D_FORTIFY_SOURCE=2)])
+
+    # -fstack-protector
+    AS_CASE(["$target_os"],
+    [mingw*], [
+	stack_protector=no
+    ],
+    [
+	RUBY_TRY_CFLAGS(-fstack-protector, [stack_protector=yes], [stack_protector=no])
+    ])
+    if test "x$stack_protector" = xyes; then
+	RUBY_APPEND_OPTION(XCFLAGS, -fstack-protector)
+	RUBY_APPEND_OPTION(XLDFLAGS, -fstack-protector)
+	RUBY_APPEND_OPTION(LDFLAGS, -fstack-protector)
+    fi
+
+    # suppress annoying -Wstrict-overflow warnings
+    RUBY_TRY_CFLAGS(-fno-strict-overflow, [RUBY_APPEND_OPTION(XCFLAGS, -fno-strict-overflow)])
+fi
+
 if test "$GCC" = ""; then
     AS_CASE(["$target_os"],[aix*],[warnflags="-qinfo=por"])
 fi
@@ -917,6 +938,14 @@ AC_ARG_ENABLE(win95,
 	AS_HELP_STRING([--enable-win95], [enable Windows 95 series support]),
   [AS_CASE(["$enableval"],[yes|no],[enable_win95=$enableval],[unset enable_win95])])
 
+AC_ARG_WITH(winnt-ver,
+  AS_HELP_STRING([--with-winnt-ver=0xXXXX], [target Windows NT version (default to 0x0501)]),
+  [with_winnt_ver="$withval"], [with_winnt_ver="0x0501"])
+AS_CASE(["$target_os"],
+[mingw*], [
+  RUBY_APPEND_OPTION(CPPFLAGS, -D_WIN32_WINNT=$with_winnt_ver)
+])
+
 AS_CASE(["$target_os"],
 [freebsd*], [
   AC_CACHE_CHECK([whether pthread should be enabled by default],
@@ -1107,7 +1136,7 @@ AC_CHECK_HEADERS(limits.h sys/file.h sys/ioctl.h sys/syscall.h\
 		 syscall.h pwd.h grp.h a.out.h utime.h direct.h sys/resource.h \
 		 sys/mkdev.h sys/utime.h xti.h netinet/in_systm.h float.h ieeefp.h \
 		 ucontext.h intrinsics.h langinfo.h locale.h sys/sendfile.h time.h \
-		 net/socket.h sys/socket.h process.h)
+		 net/socket.h sys/socket.h process.h sys/prctl.h)
 
 AC_TYPE_SIZE_T
 RUBY_CHECK_SIZEOF(size_t, [int long void*], [], [@%:@include <sys/types.h>])
@@ -1633,6 +1662,7 @@ else
   AC_DEFINE(RSHIFT(x,y), (((x)<0) ? ~((~(x))>>(int)(y)) : (x)>>(int)(y)))
 fi
 
+# win32.c still use this. Don't remove it.
 test "$rb_cv_fcnt" = "not found" && rb_cv_fcnt="not found (OK if using GNU libc)"
 AC_CACHE_CHECK([read count field in FILE structures], rb_cv_fcnt,
 [rb_cv_fcnt="not found (OK if using GNU libc)"
@@ -1650,8 +1680,9 @@ for fcnt in	dnl
 done])
 AS_CASE("$rb_cv_fcnt",
 	["not found"*], [rb_cv_fcnt="not found"],
- 	[AC_DEFINE_UNQUOTED(FILE_COUNT, $rb_cv_fcnt)])
+	[AC_DEFINE_UNQUOTED(FILE_COUNT, $rb_cv_fcnt)])
 
+# win32.c still use this. Don't remove it.
 AC_CACHE_CHECK([read buffer ptr field in FILE structures], rb_cv_frptr,
 [for frptr in	dnl
      _IO_read_ptr dnl
@@ -1995,7 +2026,8 @@ if test "$with_dln_a_out" != yes; then
 
 
   AC_ARG_ENABLE(rpath,
-       AS_HELP_STRING([--disable-rpath], [embed run path into extension libraries]),
+       AS_HELP_STRING([--enable-rpath], [embed run path into extension libraries.
+       enabled by default on ELF platforms]),
        [enable_rpath=$enableval], [enable_rpath="$rb_cv_binary_elf"])
   if test "$enable_rpath" = yes; then
     RPATHFLAG=" ${linker_flag}-R%1\$-s"
@@ -2317,6 +2349,18 @@ AS_CASE("$enable_shared", [yes], [
   if test "$rb_cv_binary_elf" = yes; then
     SOLIBS='$(LIBS)'
   fi
+
+  AS_CASE(["$target_os"],
+    [freebsd*|dragonfly*], [],
+    [
+     if test "$GCC" = yes; then
+       RUBY_TRY_LDFLAGS([${linker_flag}--no-undefined], [no_undefined=yes], [no_undefined=no])
+       if test "no_undefined" = yes; then
+	  RUBY_APPEND_OPTION(EXTLDFLAGS, [${linker_flag}--no-undefined])
+       fi
+     fi
+    ])
+
   AS_CASE(["$target_os"],
     [sunos4*], [
 	LIBRUBY_ALIASES='lib$(RUBY_SO_NAME).so.$(MAJOR).$(MINOR) lib$(RUBY_SO_NAME).so'
@@ -2401,6 +2445,21 @@ AS_CASE("$enable_shared", [yes], [
 	])
 ], [
   LIBRUBYARG_SHARED=
+
+  # enable PIE if possible
+  if test "$GCC" = yes; then
+    RUBY_TRY_CFLAGS(-fPIE, [pie=yes], [pie=no])
+    if test "$pie" = yes; then
+      RUBY_APPEND_OPTION(XCFLAGS, -fPIE)
+      for pie in -pie -Wl,-pie; do
+	RUBY_TRY_LDFLAGS([$pie], [], [pie=])
+	if test "x$pie" != x; then
+	  RUBY_APPEND_OPTION(XLDFLAGS, $pie)
+	  break
+	fi
+      done
+    fi
+  fi
 ])
 if test "$enable_rpath" = yes; then
     test -z "$LIBRUBY_RPATHFLAGS" || LIBRUBY_RPATHFLAGS="$LIBRUBY_RPATHFLAGS "
@@ -2483,7 +2542,7 @@ AS_CASE(["$target_os"],
 	],
     [os2-emx], [
 	AC_LIBOBJ([os2])
-    	CFLAGS="$CFLAGS -DOS2"
+	CFLAGS="$CFLAGS -DOS2"
 	LIBRUBY_A=`echo $LIBRUBY_A | sed 's/^lib//'`
 	LIBRUBY_SO=`echo $LIBRUBY_SO | sed 's/^lib//'`
 	LIBRUBY_ALIASES=`for i in $LIBRUBY_ALIASES; do echo "$i"; done | sed 's/^lib//'`
@@ -2645,9 +2704,9 @@ if test -n "${cxxflags+set}"; then
 fi
 if test "${ARCH_FLAG}"; then
     archflagpat=`eval echo '"'"${ARCH_FLAG}"'"' | sed 's/[[][|.*]]/\\&/g'`
-    CFLAGS=`echo "$CFLAGS" | sed "s|$archflagpat"'|$(ARCH_FLAG)|'`
-    CXXFLAGS=`echo "$CXXFLAGS" | sed "s|$archflagpat"'|$(ARCH_FLAG)|'`
-    LDFLAGS=`echo "$LDFLAGS" | sed "s|$archflagpat"'|$(ARCH_FLAG)|'`
+    CFLAGS=`echo "$CFLAGS" | sed "s| *$archflagpat"'||'`
+    CXXFLAGS=`echo "$CXXFLAGS" | sed "s| *$archflagpat"'||'`
+    LDFLAGS=`echo "$LDFLAGS" | sed "s| *$archflagpat"'||'`
 fi
 warnflags="$rb_cv_warnflags"
 AC_SUBST(cppflags, [])dnl
@@ -2658,6 +2717,7 @@ AC_SUBST(debugflags)dnl
 AC_SUBST(warnflags)dnl
 AC_SUBST(XCFLAGS)dnl
 AC_SUBST(XLDFLAGS)dnl
+AC_SUBST(EXTLDFLAGS)dnl
 AC_SUBST(LIBRUBY_LDSHARED)
 AC_SUBST(LIBRUBY_DLDFLAGS)
 AC_SUBST(RUBY_INSTALL_NAME)
@@ -2840,7 +2900,7 @@ if test "${universal_binary-no}" = yes ; then
 	    RUBY_DEFINE_IF([defined __${archs}__], RUBY_PLATFORM_CPU, ["${cpu}"])
 	done
     fi
-    ints='long int'
+    ints='long int short'
     test "$ac_cv_type_long_long" = yes && ints="'long long' $ints"
     AC_SUBST(UNIVERSAL_ARCHNAMES, "${universal_archnames}")
     AC_SUBST(UNIVERSAL_INTS, "${ints}")

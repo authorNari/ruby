@@ -526,7 +526,6 @@ static void
 raise_method_missing(rb_thread_t *th, int argc, const VALUE *argv, VALUE obj,
 		     int last_call_status)
 {
-    ID id;
     VALUE exc = rb_eNoMethodError;
     const char *format = 0;
 
@@ -535,8 +534,6 @@ raise_method_missing(rb_thread_t *th, int argc, const VALUE *argv, VALUE obj,
     }
 
     stack_check();
-
-    id = SYM2ID(argv[0]);
 
     if (last_call_status & NOEX_PRIVATE) {
 	format = "private method `%s' called for %s";
@@ -715,7 +712,6 @@ send_internal(int argc, const VALUE *argv, VALUE recv, call_type scope)
     }
 
     vid = *argv++; argc--;
-    PASS_PASSED_BLOCK_TH(th);
 
     id = rb_check_id(&vid);
     if (!id) {
@@ -726,13 +722,14 @@ send_internal(int argc, const VALUE *argv, VALUE recv, call_type scope)
 	}
 	id = rb_to_id(vid);
     }
+    PASS_PASSED_BLOCK_TH(th);
     return rb_call0(recv, id, argc, argv, scope, self);
 }
 
 /*
  *  call-seq:
- *     obj.send(symbol [, args...])        -> obj
- *     obj.__send__(symbol [, args...])      -> obj
+ *     foo.send(symbol [, args...])        -> obj
+ *     foo.__send__(symbol [, args...])      -> obj
  *
  *  Invokes the method identified by _symbol_, passing it any
  *  arguments specified. You can use <code>__send__</code> if the name

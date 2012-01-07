@@ -136,20 +136,40 @@ class TestReadline < Test::Unit::TestCase
         actual_text = nil
         actual_line_buffer = nil
         actual_point = nil
-        Readline.completion_proc = proc { |text|
+        Readline.completion_proc = ->(text) {
           actual_text = text
           actual_point = Readline.point
-          actual_buffer_line = Readline.line_buffer
+          actual_line_buffer = Readline.line_buffer
           stdin.write(" finish\n")
           stdin.close
           stdout.close
           return ["complete"]
         }
+
         stdin.write("first second\t")
         stdin.flush
+        Readline.completion_append_character = " "
         line = replace_stdio(stdin.path, stdout.path) {
           Readline.readline("> ", false)
         }
+        assert_equal("second", actual_text)
+        assert_equal("first second", actual_line_buffer)
+        assert_equal(12, actual_point)
+        assert_equal("first complete  finish", Readline.line_buffer)
+        assert_equal(Encoding.find("locale"), Readline.line_buffer.encoding)
+        assert_equal(true, Readline.line_buffer.tainted?)
+        assert_equal(22, Readline.point)
+
+        stdin.open
+        stdout.open
+
+        stdin.write("first second\t")
+        stdin.flush
+        Readline.completion_append_character = nil
+        line = replace_stdio(stdin.path, stdout.path) {
+          Readline.readline("> ", false)
+        }
+        assert_equal("second", actual_text)
         assert_equal("first second", actual_line_buffer)
         assert_equal(12, actual_point)
         assert_equal("first complete finish", Readline.line_buffer)
@@ -280,6 +300,16 @@ class TestReadline < Test::Unit::TestCase
         end
       rescue NotImplementedError
       end
+    end
+  end
+
+  def test_closed_outstream
+    bug5803 = '[ruby-dev:45043]'
+    IO.pipe do |r, w|
+      Readline.input = r
+      Readline.output = w
+      (w << "##\t").close
+      assert_raise(IOError, bug5803) {Readline.readline}
     end
   end
 

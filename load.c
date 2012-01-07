@@ -183,7 +183,7 @@ rb_feature_p(const char *feature, const char *ext, int rb, int expanded, const c
 	    fs.name = feature;
 	    fs.len = len;
 	    fs.type = type;
-	    fs.load_path = load_path ? load_path : rb_get_load_path();
+	    fs.load_path = load_path ? load_path : rb_get_expanded_load_path();
 	    fs.result = 0;
 	    st_foreach(loading_tbl, loaded_feature_path_i, (st_data_t)&fs);
 	    if ((f = fs.result) != 0) {
@@ -405,7 +405,15 @@ load_lock(const char *ftptr)
 	rb_warning("loading in progress, circular require considered harmful - %s", ftptr);
 	rb_backtrace();
     }
-    return RTEST(rb_barrier_wait((VALUE)data)) ? (char *)ftptr : 0;
+    switch (rb_barrier_wait((VALUE)data)) {
+      case Qfalse:
+	data = (st_data_t)ftptr;
+	st_delete(loading_tbl, &data, 0);
+	return 0;
+      case Qnil:
+	return 0;
+    }
+    return (char *)ftptr;
 }
 
 static void
@@ -415,14 +423,14 @@ load_unlock(const char *ftptr, int done)
 	st_data_t key = (st_data_t)ftptr;
 	st_data_t data;
 	st_table *loading_tbl = get_loading_table();
+	VALUE barrier;
 
-	if (st_delete(loading_tbl, &key, &data)) {
-	    VALUE barrier = (VALUE)data;
-	    xfree((char *)key);
-	    if (done)
-		rb_barrier_destroy(barrier);
-	    else
-		rb_barrier_release(barrier);
+	if (!st_lookup(loading_tbl, key, &data)) return;
+	barrier = (VALUE)data;
+	if (!(done ? rb_barrier_destroy(barrier) : rb_barrier_release(barrier))) {
+	    if (st_delete(loading_tbl, &key, &data)) {
+		xfree((char *)key);
+	    }
 	}
     }
 }

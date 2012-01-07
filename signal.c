@@ -785,6 +785,7 @@ sig_dfl:
 	else {
 	    rb_proc_t *proc;
 	    GetProcPtr(*cmd, proc);
+	    (void)proc;
 	}
     }
 
@@ -863,7 +864,8 @@ trap_ensure(struct trap_arg *arg)
 }
 #endif
 
-int reserved_signal_p(int signo)
+static int
+reserved_signal_p(int signo)
 {
 /* Synchronous signal can't deliver to main thread */
 #ifdef SIGSEGV
