@@ -3822,9 +3822,16 @@ gc_test(VALUE self)
     puts("---- gc_test ----");
     {
         puts("= aligned_malloc/aligned_free");
-        p = aligned_malloc(HEAP_SIZE);
+        p = aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
         assert(((uintptr_t)p & (HEAP_SIZE-1)) == 0);
         aligned_free(p);
+
+        p = aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+        printf("1: %p\n", p);
+        p = aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+        printf("2: %p\n", p);
+        p = aligned_malloc(HEAP_ALIGN, HEAP_SIZE);
+        printf("3: %p\n", p);
     }
 
     {
