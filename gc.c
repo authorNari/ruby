@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include <setjmp.h>
 #include <sys/types.h>
-#include <malloc.h>
 #include <assert.h>
 
 #ifdef HAVE_SYS_TIME_H
@@ -37,6 +36,10 @@
 
 #if defined _WIN32 || defined __CYGWIN__
 #include <windows.h>
+#endif
+
+#if !defined(__MINGW32__) && !defined(_WIN32) && !defined(__CYGWIN__) &&!defined(HAVE_POSIX_MEMALIGN) &&defined(HAVE_MEMALIGN)
+#include <malloc.h>
 #endif
 
 #ifdef HAVE_VALGRIND_MEMCHECK_H
@@ -534,7 +537,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 #define HEAP_ALIGN_MASK 0x3fff
 #define HEAP_SIZE HEAP_ALIGN
 
-#define HEAP_OBJ_LIMIT (HEAP_SIZE/(unsigned int)sizeof(struct RVALUE) - (sizeof(struct heaps_slot)/(unsigned int)sizeof(struct RVALUE)+1))
+#define HEAP_OBJ_LIMIT (HEAP_SIZE/(unsigned int)sizeof(struct RVALUE) - (unsigned int)(sizeof(struct heaps_slot)/sizeof(struct RVALUE)+1))
 #define HEAP_BITMAP_LIMIT (HEAP_OBJ_LIMIT/sizeof(uintptr_t)+1)
 
 #define GET_HEAP_SLOT(x) (HEAP_SLOT(((uintptr_t)x) & ~(HEAP_ALIGN_MASK)))
@@ -1079,16 +1082,16 @@ aligned_malloc(size_t aligned_size)
     res = __mingw_aligned_malloc(aligned_size, aligned_size);
 #elif _WIN32 || defined __CYGWIN__
     res = _aligned_malloc(aligned_size, aligned_size);
-#else
-# if _POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600
+#elif defined(HAVE_POSIX_MEMALIGN)
     if (posix_memalign(&res, aligned_size, aligned_size) == 0) {
         return res;
     } else {
         return NULL;
     }
-# else
+#elif defined(HAVE_MEMALIGN)
     res = memalign(aligned_size, aligned_size);
-# endif
+#else
+#error no memalign function
 #endif
     return res;
 }
@@ -2193,9 +2196,7 @@ slot_sweep(rb_objspace_t *objspace, struct heaps_slot *sweep_slot)
                     }
                     p->as.free.next = deferred_final_list;
                     deferred_final_list = p;
-                    if (BUILTIN_TYPE(p) != T_ZOMBIE) {
-                        fprintf(stderr, "NOT T_ZOMBIE!!\n");
-                    }
+                    assert(BUILTIN_TYPE(p) == T_ZOMBIE);
                     final_num++;
                 }
                 else {
