@@ -659,7 +659,9 @@ gc.$(OBJEXT): {$(VPATH)}gc.c $(RUBY_H_INCLUDES) {$(VPATH)}re.h \
   {$(VPATH)}regex.h $(ENCODING_H_INCLUDES) $(VM_CORE_H_INCLUDES) \
   {$(VPATH)}gc.h {$(VPATH)}io.h {$(VPATH)}eval_intern.h {$(VPATH)}util.h \
   {$(VPATH)}debug.h {$(VPATH)}internal.h {$(VPATH)}constant.h \
-  {$(VPATH)}thread.h
+  {$(VPATH)}thread.h {$(VPATH)}gc_alloc.h {$(VPATH)}gc_alloc.c \
+  {$(VPATH)}gc_ms.h {$(VPATH)}gc_ms.c {$(VPATH)}gc_ms_heap.c \
+  {$(VPATH)}gc_ms_profiler.c
 hash.$(OBJEXT): {$(VPATH)}hash.c $(RUBY_H_INCLUDES) {$(VPATH)}util.h \
   $(ENCODING_H_INCLUDES)
 inits.$(OBJEXT): {$(VPATH)}inits.c $(RUBY_H_INCLUDES) \
