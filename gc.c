@@ -626,8 +626,8 @@ heaps_increment(rb_objspace_t *objspace)
     return FALSE;
 }
 
-VALUE
-rb_newobj(void)
+static VALUE
+newobj(VALUE klass, enum ruby_value_type type)
 {
     rb_objspace_t *objspace = &rb_objspace;
     VALUE obj;
@@ -664,6 +664,23 @@ rb_newobj(void)
     RANY(obj)->line = rb_sourceline();
 #endif
     gc_prof_inc_live_num(objspace);
+
+    return obj;
+}
+
+VALUE
+rb_newobj(void)
+{
+    return newobj(0, T_NONE);
+}
+
+VALUE
+rb_newobj_with(VALUE klass, enum ruby_value_type type)
+{
+    VALUE obj;
+
+    obj = newobj(klass, type);
+    OBJSETUP(obj, klass, type);
 
     return obj;
 }
