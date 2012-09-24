@@ -112,8 +112,6 @@ static ruby_gc_params_t initial_params = {
 
 #define nomem_error GET_VM()->special_exceptions[ruby_error_nomemory]
 
-#define MARK_STACK_MAX 1024
-
 #ifndef GC_PROFILE_MORE_DETAIL
 #define GC_PROFILE_MORE_DETAIL 0
 #endif
@@ -208,6 +206,30 @@ struct gc_list {
     struct gc_list *next;
 };
 
+#ifndef __LP64__
+/* 4KB / 4 - 2(for next field and malloc header) */
+#define PAGE_DATAS_SIZE 1022
+#else
+/* 4KB / 8 - 2 */
+#define PAGE_DATAS_SIZE 510
+#endif
+
+#define MARK_STACK_PAGE_CACHE_LIMIT 4
+
+typedef struct stack_page {
+    void *datas[PAGE_DATAS_SIZE];
+    struct stack_page *next;
+} stack_page_t;
+
+typedef struct mark_stack {
+    stack_page_t *page;
+    stack_page_t *cache;
+    size_t page_index;
+    size_t page_size;
+    size_t full_page_size;
+    size_t cache_size;
+} mark_stack_t;
+
 #ifndef CALC_EXACT_MALLOC_SIZE
 #define CALC_EXACT_MALLOC_SIZE 0
 #endif
@@ -248,11 +270,7 @@ typedef struct rb_objspace {
 	st_table *table;
 	RVALUE *deferred;
     } final;
-    struct {
-	VALUE buffer[MARK_STACK_MAX];
-	VALUE *ptr;
-	int overflow;
-    } markstack;
+    mark_stack_t mark_stack;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -287,9 +305,6 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #define finalizing		objspace->flags.finalizing
 #define finalizer_table 	objspace->final.table
 #define deferred_final_list	objspace->final.deferred
-#define mark_stack		objspace->markstack.buffer
-#define mark_stack_ptr		objspace->markstack.ptr
-#define mark_stack_overflow	objspace->markstack.overflow
 #define global_List		objspace->global_list
 #define ruby_gc_stress		objspace->gc_stress
 #define initial_malloc_limit	initial_params.initial_malloc_limit
@@ -413,6 +428,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+    free_stack_pages(&objspace->mark_stack);
     free(objspace);
 }
 #endif
@@ -2060,6 +2076,127 @@ gc_sweep(rb_objspace_t *objspace)
     during_gc = 0;
 }
 
+/* Marking stack */
+
+static stack_page_t *
+stack_page_alloc(void)
+{
+    stack_page_t *res;
+
+    res = malloc(sizeof(stack_page_t));
+    if (!res)
+        rb_memerror();
+
+    return res;
+}
+
+static inline int
+is_mark_stask_empty(mark_stack_t *stack)
+{
+    return stack->page == NULL;
+}
+
+static size_t
+mark_stask_size(mark_stack_t *stack)
+{
+    if (is_mark_stask_empty(stack)) {
+        return 0;
+    }
+    return stack->full_page_size + stack->page_index;
+}
+
+static void
+push_mark_stack_page(mark_stack_t *stack)
+{
+    stack_page_t *next;
+    int empty;
+
+    assert(stack->page_index == stack->page_size);
+    if (stack->cache_size > 0) {
+        next = stack->cache;
+        stack->cache = stack->cache->next;
+        stack->cache_size--;
+    }
+    else {
+        next = stack_page_alloc();
+    }
+    empty = is_mark_stask_empty(stack);
+    next->next = stack->page;
+    stack->page = next;
+    stack->page_index = 0;
+    if (!empty) {
+        stack->full_page_size += stack->page_size;
+    }
+}
+
+static void
+pop_mark_stack_page(mark_stack_t *stack)
+{
+    stack_page_t *prev;
+
+    prev = stack->page->next;
+    assert(stack->page_index == 0);
+    if (stack->cache_size < MARK_STACK_PAGE_CACHE_LIMIT) {
+        stack->page->next = stack->cache;
+        stack->cache = stack->page;
+        stack->cache_size++;
+    }
+    else {
+        free(stack->page);
+    }
+    stack->page = prev;
+    stack->page_index = stack->page_size;
+    if (prev != NULL) {
+        stack->full_page_size -= stack->page_size;
+    }
+}
+
+static void
+free_stack_pages(mark_stack_t *stack)
+{
+    stack_page_t *page = stack->page;
+    while (page != NULL) {
+        free(page);
+        page = page->next;
+    }
+}
+
+static inline void
+stack_page_datas_store(mark_stack_t *stack, size_t index, void *data)
+{
+    ((VALUE *)stack->page->datas)[index] = (VALUE)data;
+}
+
+static inline void *
+stack_page_datas_entry(mark_stack_t *stack, size_t index)
+{
+    return (void *)((VALUE *)stack->page->datas)[index];
+}
+
+static void
+push_mark_stack(mark_stack_t *stack, void *data)
+{
+    if (stack->page_index == stack->page_size) {
+        push_mark_stack_page(stack);
+    }
+    stack_page_datas_store(stack, stack->page_index++, data);
+}
+
+static int
+pop_mark_stack(mark_stack_t *stack, void **data)
+{
+    if (is_mark_stask_empty(stack)) {
+        return FALSE;
+    }
+    if (stack->page_index == 1) {
+        *data = stack_page_datas_entry(stack, --stack->page_index);
+        pop_mark_stack_page(stack);
+        return TRUE;
+    }
+    *data = stack_page_datas_entry(stack, --stack->page_index);
+    return TRUE;
+}
+
 /* Marking */
 
 #define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] = bits[BITMAP_INDEX(p)] | ((uintptr_t)1 << BITMAP_OFFSET(p)))
@@ -2096,9 +2233,6 @@ ruby_get_stack_grow_direction(volatile VALUE *addr)
 }
 #endif
 
-#define GC_LEVEL_MAX 250
-#define STACKFRAME_FOR_GC_MARK (GC_LEVEL_MAX * GC_MARK_STACKFRAME_WORD)
-
 size_t
 ruby_stack_length(VALUE **p)
 {
@@ -2134,13 +2268,6 @@ ruby_stack_check(void)
 #else
     return stack_check(STACKFRAME_FOR_CALL_CFUNC);
 #endif
-}
-
-static void
-init_mark_stack(rb_objspace_t *objspace)
-{
-    mark_stack_overflow = 0;
-    mark_stack_ptr = mark_stack;
 }
 
 static void
@@ -2400,18 +2527,6 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (!gc_mark_ptr(objspace, ptr)) return;	/* already marked */
 
-    if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check(STACKFRAME_FOR_GC_MARK))) {
-	if (!mark_stack_overflow) {
-	    if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
-		*mark_stack_ptr = ptr;
-		mark_stack_ptr++;
-	    }
-	    else {
-		mark_stack_overflow = 1;
-	    }
-	}
-	return;
-    }
     gc_mark_children(objspace, ptr, lev+1);
 }
 
@@ -2711,43 +2826,6 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 }
 
 static void
-gc_mark_all(rb_objspace_t *objspace)
-{
-    RVALUE *p, *pend;
-    size_t i;
-
-    init_mark_stack(objspace);
-    for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-	while (p < pend) {
-	    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p) &&
-		p->as.basic.flags) {
-		gc_mark_children(objspace, (VALUE)p, 0);
-	    }
-	    p++;
-	}
-    }
-}
-
-static void
-gc_mark_rest(rb_objspace_t *objspace)
-{
-    VALUE tmp_arry[MARK_STACK_MAX];
-    VALUE *p;
-
-    p = (mark_stack_ptr - mark_stack) + tmp_arry;
-    MEMCPY(tmp_arry, mark_stack, VALUE, p - tmp_arry);
-
-    init_mark_stack(objspace);
-    while (p != tmp_arry) {
-	p--;
-	gc_mark_children(objspace, *p, 0);
-    }
-}
-
-#define MARK_STACK_EMPTY (mark_stack_ptr == mark_stack)
-
-static void
 gc_marks(rb_objspace_t *objspace)
 {
     struct gc_list *list;
@@ -2759,8 +2837,6 @@ gc_marks(rb_objspace_t *objspace)
 
 
     SET_STACK_END;
-
-    init_mark_stack(objspace);
 
     th->vm->self ? rb_gc_mark(th->vm->self) : rb_vm_mark(th->vm);
 
@@ -2786,15 +2862,6 @@ gc_marks(rb_objspace_t *objspace)
 
     rb_gc_mark_unlinked_live_method_entries(th->vm);
 
-    /* gc_mark objects whose marking are not completed*/
-    while (!MARK_STACK_EMPTY) {
-	if (mark_stack_overflow) {
-	    gc_mark_all(objspace);
-	}
-	else {
-	    gc_mark_rest(objspace);
-	}
-    }
     gc_prof_mark_timer_stop(objspace);
 }
 
