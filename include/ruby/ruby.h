@@ -657,7 +657,7 @@ VALUE rb_uint2big(VALUE);
 VALUE rb_int2big(SIGNED_VALUE);
 
 VALUE rb_newobj(void);
-VALUE rb_newobj_with(VALUE, enum ruby_value_type);
+VALUE rb_newobj_with(VALUE, VALUE);
 #define NEWOBJ(obj,type) type *(obj) = (type*)rb_newobj()
 #define NEWOBJ_WITH(obj,type,klass,flags) type *(obj) = (type*)rb_newobj_with(klass, flags)
 #define OBJSETUP(obj,c,t) do {\

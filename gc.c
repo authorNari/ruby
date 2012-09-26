@@ -627,7 +627,7 @@ heaps_increment(rb_objspace_t *objspace)
 }
 
 static VALUE
-newobj(VALUE klass, enum ruby_value_type type)
+newobj(VALUE klass, VALUE flags)
 {
     rb_objspace_t *objspace = &rb_objspace;
     VALUE obj;
@@ -675,12 +675,12 @@ rb_newobj(void)
 }
 
 VALUE
-rb_newobj_with(VALUE klass, enum ruby_value_type type)
+rb_newobj_with(VALUE klass, VALUE flags)
 {
     VALUE obj;
 
-    obj = newobj(klass, type);
-    OBJSETUP(obj, klass, type);
+    obj = newobj(klass, flags);
+    OBJSETUP(obj, klass, flags);
 
     return obj;
 }
