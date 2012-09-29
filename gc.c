@@ -217,7 +217,7 @@ struct gc_list {
 #define MARK_STACK_PAGE_CACHE_LIMIT 4
 
 typedef struct stack_page {
-    void *datas[PAGE_DATAS_SIZE];
+    VALUE datas[PAGE_DATAS_SIZE];
     struct stack_page *next;
 } stack_page_t;
 
@@ -394,6 +394,7 @@ rb_objspace_alloc(void)
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
 static void aligned_free(void *);
+static void free_stack_pages(mark_stack_t *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -586,6 +587,8 @@ add_heap_slots(rb_objspace_t *objspace, size_t add)
     heaps_inc = 0;
 }
 
+static void push_mark_stack_page(mark_stack_t *);
+
 static void
 init_heap(rb_objspace_t *objspace)
 {
@@ -602,6 +605,8 @@ init_heap(rb_objspace_t *objspace)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
+    push_mark_stack_page(&objspace->mark_stack);
+    objspace->mark_stack.page_size = PAGE_DATAS_SIZE;
 }
 
 static void
@@ -2155,26 +2160,29 @@ static void
 free_stack_pages(mark_stack_t *stack)
 {
     stack_page_t *page = stack->page;
+    stack_page_t *next = NULL;
+
     while (page != NULL) {
+        next = page->next;
         free(page);
-        page = page->next;
+        page = next;
     }
 }
 
 static inline void
-stack_page_datas_store(mark_stack_t *stack, size_t index, void *data)
+stack_page_datas_store(mark_stack_t *stack, size_t index, VALUE data)
 {
-    ((VALUE *)stack->page->datas)[index] = (VALUE)data;
+    stack->page->datas[index] = data;
 }
 
-static inline void *
+static inline VALUE
 stack_page_datas_entry(mark_stack_t *stack, size_t index)
 {
-    return (void *)((VALUE *)stack->page->datas)[index];
+    return stack->page->datas[index];
 }
 
 static void
-push_mark_stack(mark_stack_t *stack, void *data)
+push_mark_stack(mark_stack_t *stack, VALUE data)
 {
     if (stack->page_index == stack->page_size) {
         push_mark_stack_page(stack);
@@ -2183,7 +2191,7 @@ push_mark_stack(mark_stack_t *stack, void *data)
 }
 
 static int
-pop_mark_stack(mark_stack_t *stack, void **data)
+pop_mark_stack(mark_stack_t *stack, VALUE *data)
 {
     if (is_mark_stask_empty(stack)) {
         return FALSE;
@@ -2540,16 +2548,8 @@ static void
 gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 {
     register RVALUE *obj = RANY(ptr);
+    mark_stack_t *mstack = &objspace->mark_stack;
 
-    goto marking;		/* skip */
-
-  again:
-    obj = RANY(ptr);
-    if (rb_special_const_p(ptr)) return; /* special const not marked */
-    if (obj->as.basic.flags == 0) return;       /* free cell */
-    if (!gc_mark_ptr(objspace, ptr)) return;  /* already marked */
-
-  marking:
     if (FL_TEST(obj, FL_EXIVAR)) {
 	rb_mark_generic_ivar(ptr);
     }
@@ -2571,7 +2571,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_RESBODY:
 	  case NODE_CLASS:
 	  case NODE_BLOCK_PASS:
-	    gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev);
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
 	    /* fall through */
 	  case NODE_BLOCK:	/* 1,3 */
 	  case NODE_ARRAY:
@@ -2583,14 +2583,14 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_CALL:
 	  case NODE_DEFS:
 	  case NODE_OP_ASGN1:
-	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+            push_mark_stack(mstack, (VALUE)obj->as.node.u1.node);
 	    /* fall through */
 	  case NODE_SUPER:	/* 3 */
 	  case NODE_FCALL:
 	  case NODE_DEFN:
 	  case NODE_ARGS_AUX:
-	    ptr = (VALUE)obj->as.node.u3.node;
-	    goto again;
+            push_mark_stack(mstack, (VALUE)obj->as.node.u3.node);
+            break;
 
 	  case NODE_WHILE:	/* 1,2 */
 	  case NODE_UNTIL:
@@ -2610,7 +2610,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_ALIAS:
 	  case NODE_VALIAS:
 	  case NODE_ARGSCAT:
-	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u1.node);
 	    /* fall through */
 	  case NODE_GASGN:	/* 2 */
 	  case NODE_LASGN:
@@ -2624,8 +2624,8 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_EVSTR:
 	  case NODE_UNDEF:
 	  case NODE_POSTEXE:
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+            push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
+	    break;
 
 	  case NODE_HASH:	/* 1 */
 	  case NODE_LIT:
@@ -2640,29 +2640,29 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	  case NODE_COLON2:
 	  case NODE_SPLAT:
 	  case NODE_TO_ARY:
-	    ptr = (VALUE)obj->as.node.u1.node;
-	    goto again;
+            push_mark_stack(mstack, (VALUE)obj->as.node.u1.node);
+	    break;
 
 	  case NODE_SCOPE:	/* 2,3 */
 	  case NODE_CDECL:
 	  case NODE_OPT_ARG:
-	    gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev);
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u3.node);
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
+	    break;
 
 	  case NODE_ARGS:	/* custom */
 	    {
 		struct rb_args_info *args = obj->as.node.u3.args;
 		if (args) {
-		    if (args->pre_init)    gc_mark(objspace, (VALUE)args->pre_init, lev);
-		    if (args->post_init)   gc_mark(objspace, (VALUE)args->post_init, lev);
-		    if (args->opt_args)    gc_mark(objspace, (VALUE)args->opt_args, lev);
-		    if (args->kw_args)     gc_mark(objspace, (VALUE)args->kw_args, lev);
-		    if (args->kw_rest_arg) gc_mark(objspace, (VALUE)args->kw_rest_arg, lev);
+		    if (args->pre_init)    push_mark_stack(mstack, (VALUE)args->pre_init);
+		    if (args->post_init)   push_mark_stack(mstack, (VALUE)args->post_init);
+		    if (args->opt_args)    push_mark_stack(mstack, (VALUE)args->opt_args);
+		    if (args->kw_args)     push_mark_stack(mstack, (VALUE)args->kw_args);
+		    if (args->kw_rest_arg) push_mark_stack(mstack, (VALUE)args->kw_rest_arg);
 		}
 	    }
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
+	    break;
 
 	  case NODE_ZARRAY:	/* - */
 	  case NODE_ZSUPER:
@@ -2687,30 +2687,30 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	    mark_locations_array(objspace,
 				 (VALUE*)obj->as.node.u1.value,
 				 obj->as.node.u3.cnt);
-	    ptr = (VALUE)obj->as.node.u2.node;
-	    goto again;
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
+	    break;
 
 	  case NODE_CREF:
-	    gc_mark(objspace, obj->as.node.nd_omod, lev);
-	    gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
-	    ptr = (VALUE)obj->as.node.u3.node;
-	    goto again;
+	    push_mark_stack(mstack, obj->as.node.nd_omod);
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u1.node);
+	    push_mark_stack(mstack, (VALUE)obj->as.node.u3.node);
+	    break;
 
 	  default:		/* unlisted NODE */
 	    if (is_pointer_to_heap(objspace, obj->as.node.u1.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u1.node, lev);
+		push_mark_stack(mstack, (VALUE)obj->as.node.u1.node);
 	    }
 	    if (is_pointer_to_heap(objspace, obj->as.node.u2.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u2.node, lev);
+		push_mark_stack(mstack, (VALUE)obj->as.node.u2.node);
 	    }
 	    if (is_pointer_to_heap(objspace, obj->as.node.u3.node)) {
-		gc_mark(objspace, (VALUE)obj->as.node.u3.node, lev);
+		push_mark_stack(mstack, (VALUE)obj->as.node.u3.node);
 	    }
 	}
 	return;			/* no need to mark class. */
     }
 
-    gc_mark(objspace, obj->as.basic.klass, lev);
+    push_mark_stack(mstack, obj->as.basic.klass);
     switch (BUILTIN_TYPE(obj)) {
       case T_ICLASS:
       case T_CLASS:
@@ -2719,33 +2719,33 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	if (!RCLASS_EXT(obj)) break;
 	mark_tbl(objspace, RCLASS_IV_TBL(obj), lev);
 	mark_const_tbl(objspace, RCLASS_CONST_TBL(obj), lev);
-	ptr = RCLASS_SUPER(obj);
-	goto again;
+	push_mark_stack(mstack, RCLASS_SUPER(obj));
+	break;
 
       case T_ARRAY:
 	if (FL_TEST(obj, ELTS_SHARED)) {
-	    ptr = obj->as.array.as.heap.aux.shared;
-	    goto again;
+	    push_mark_stack(mstack, obj->as.array.as.heap.aux.shared);
+	    break;
 	}
 	else {
 	    long i, len = RARRAY_LEN(obj);
 	    VALUE *ptr = RARRAY_PTR(obj);
 	    for (i=0; i < len; i++) {
-		gc_mark(objspace, *ptr++, lev);
+		push_mark_stack(mstack, *ptr++);
 	    }
 	}
 	break;
 
       case T_HASH:
 	mark_hash(objspace, obj->as.hash.ntbl, lev);
-	ptr = obj->as.hash.ifnone;
-	goto again;
+	push_mark_stack(mstack, obj->as.hash.ifnone);
+	break;
 
       case T_STRING:
 #define STR_ASSOC FL_USER3   /* copied from string.c */
 	if (FL_TEST(obj, RSTRING_NOEMBED) && FL_ANY(obj, ELTS_SHARED|STR_ASSOC)) {
-	    ptr = obj->as.string.as.heap.aux.shared;
-	    goto again;
+	    push_mark_stack(mstack, obj->as.string.as.heap.aux.shared);
+	    break;
 	}
 	break;
 
@@ -2764,24 +2764,24 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
             long i, len = ROBJECT_NUMIV(obj);
 	    VALUE *ptr = ROBJECT_IVPTR(obj);
             for (i  = 0; i < len; i++) {
-		gc_mark(objspace, *ptr++, lev);
+		push_mark_stack(mstack, *ptr++);
             }
         }
 	break;
 
       case T_FILE:
         if (obj->as.file.fptr) {
-            gc_mark(objspace, obj->as.file.fptr->pathv, lev);
-            gc_mark(objspace, obj->as.file.fptr->tied_io_for_writing, lev);
-            gc_mark(objspace, obj->as.file.fptr->writeconv_asciicompat, lev);
-            gc_mark(objspace, obj->as.file.fptr->writeconv_pre_ecopts, lev);
-            gc_mark(objspace, obj->as.file.fptr->encs.ecopts, lev);
-            gc_mark(objspace, obj->as.file.fptr->write_lock, lev);
+            push_mark_stack(mstack, obj->as.file.fptr->pathv);
+            push_mark_stack(mstack, obj->as.file.fptr->tied_io_for_writing);
+            push_mark_stack(mstack, obj->as.file.fptr->writeconv_asciicompat);
+            push_mark_stack(mstack, obj->as.file.fptr->writeconv_pre_ecopts);
+            push_mark_stack(mstack, obj->as.file.fptr->encs.ecopts);
+            push_mark_stack(mstack, obj->as.file.fptr->write_lock);
         }
         break;
 
       case T_REGEXP:
-        gc_mark(objspace, obj->as.regexp.src, lev);
+        push_mark_stack(mstack, obj->as.regexp.src);
         break;
 
       case T_FLOAT:
@@ -2790,21 +2790,21 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	break;
 
       case T_MATCH:
-	gc_mark(objspace, obj->as.match.regexp, lev);
+	push_mark_stack(mstack, obj->as.match.regexp);
 	if (obj->as.match.str) {
-	    ptr = obj->as.match.str;
-	    goto again;
+	    push_mark_stack(mstack, obj->as.match.str);
+	    break;
 	}
 	break;
 
       case T_RATIONAL:
-	gc_mark(objspace, obj->as.rational.num, lev);
-	gc_mark(objspace, obj->as.rational.den, lev);
+	push_mark_stack(mstack, obj->as.rational.num);
+	push_mark_stack(mstack, obj->as.rational.den);
 	break;
 
       case T_COMPLEX:
-	gc_mark(objspace, obj->as.complex.real, lev);
-	gc_mark(objspace, obj->as.complex.imag, lev);
+	push_mark_stack(mstack, obj->as.complex.real);
+	push_mark_stack(mstack, obj->as.complex.imag);
 	break;
 
       case T_STRUCT:
@@ -2813,7 +2813,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 	    VALUE *ptr = RSTRUCT_PTR(obj);
 
 	    while (len--) {
-		gc_mark(objspace, *ptr++, lev);
+		push_mark_stack(mstack, *ptr++);
 	    }
 	}
 	break;
@@ -2830,6 +2830,8 @@ gc_marks(rb_objspace_t *objspace)
 {
     struct gc_list *list;
     rb_thread_t *th = GET_THREAD();
+    mark_stack_t *mstack = &objspace->mark_stack;
+    VALUE obj = 0;
     gc_prof_mark_timer_start(objspace);
 
     objspace->heap.live_num = 0;
@@ -2861,6 +2863,11 @@ gc_marks(rb_objspace_t *objspace)
     rb_gc_mark_parser();
 
     rb_gc_mark_unlinked_live_method_entries(th->vm);
+
+    /* marking-loop */
+    while (pop_mark_stack(mstack, &obj)) {
+        gc_mark(objspace, obj, 0);
+    }
 
     gc_prof_mark_timer_stop(objspace);
 }
