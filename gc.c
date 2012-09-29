@@ -230,13 +230,6 @@ typedef struct mark_stack {
     size_t cache_size;
 } mark_stack_t;
 
-#define PREFETCH_BUFFER_SIZE 10
-
-typedef struct prefetch_buffer {
-    VALUE data[PREFETCH_BUFFER_SIZE];
-    size_t index;
-} prefetch_buffer_t;
-
 #ifndef CALC_EXACT_MALLOC_SIZE
 #define CALC_EXACT_MALLOC_SIZE 0
 #endif
@@ -278,7 +271,6 @@ typedef struct rb_objspace {
 	RVALUE *deferred;
     } final;
     mark_stack_t mark_stack;
-    prefetch_buffer_t prefetch_buffer;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -2089,20 +2081,6 @@ gc_sweep(rb_objspace_t *objspace)
     during_gc = 0;
 }
 
-/* Prefetch buffer */
-
-static inline int
-add_prefetch_buffer(prefetch_buffer_t *queue, VALUE data)
-{
-    if (queue->index < PREFETCH_BUFFER_SIZE) {
-        queue->data[queue->index] = data;
-        queue->index++;
-        return TRUE;
-    } else {
-        return FALSE;
-    }
-}
-
 /* Marking stack */
 
 static stack_page_t *
@@ -2853,7 +2831,7 @@ gc_marks(rb_objspace_t *objspace)
     struct gc_list *list;
     rb_thread_t *th = GET_THREAD();
     mark_stack_t *mstack = &objspace->mark_stack;
-    VALUE stack_obj;
+    VALUE obj = 0;
     gc_prof_mark_timer_start(objspace);
 
     objspace->heap.live_num = 0;
@@ -2887,21 +2865,8 @@ gc_marks(rb_objspace_t *objspace)
     rb_gc_mark_unlinked_live_method_entries(th->vm);
 
     /* marking-loop */
-    while(TRUE) {
-        while (pop_mark_stack(mstack, &stack_obj)) {
-            __builtin_prefetch((void *)stack_obj);
-            if (!add_prefetch_buffer(&objspace->prefetch_buffer, stack_obj)) {
-                int i;
-                for (i=0; i < PREFETCH_BUFFER_SIZE; i++) {
-                    gc_mark(objspace, objspace->prefetch_buffer.data[i], 0);
-                }
-                objspace->prefetch_buffer.index = 0;
-                add_prefetch_buffer(&objspace->prefetch_buffer, stack_obj);
-            }
-        }
-        if (objspace->prefetch_buffer.index == 0)
-            break;
-        gc_mark(objspace, objspace->prefetch_buffer.data[--objspace->prefetch_buffer.index], 0);
+    while (pop_mark_stack(mstack, &obj)) {
+        gc_mark(objspace, obj, 0);
     }
 
     gc_prof_mark_timer_stop(objspace);
