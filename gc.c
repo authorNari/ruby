@@ -112,8 +112,6 @@ static ruby_gc_params_t initial_params = {
 
 #define nomem_error GET_VM()->special_exceptions[ruby_error_nomemory]
 
-#define MARK_STACK_MAX 1024
-
 #ifndef GC_PROFILE_MORE_DETAIL
 #define GC_PROFILE_MORE_DETAIL 0
 #endif
@@ -208,6 +206,22 @@ struct gc_list {
     struct gc_list *next;
 };
 
+#define MARK_BUFFER_SIZE 508
+
+typedef struct mark_buffer {
+    VALUE data[MARK_BUFFER_SIZE];
+    int head;
+    int num;
+    struct mark_buffer *next;
+} mark_buffer_t;
+
+typedef struct mark_queue {
+    mark_buffer_t *head;
+    mark_buffer_t *tail;
+    mark_buffer_t *free;
+    size_t free_size;
+} mark_queue_t;
+
 #ifndef CALC_EXACT_MALLOC_SIZE
 #define CALC_EXACT_MALLOC_SIZE 0
 #endif
@@ -248,11 +262,7 @@ typedef struct rb_objspace {
 	st_table *table;
 	RVALUE *deferred;
     } final;
-    struct {
-	VALUE buffer[MARK_STACK_MAX];
-	VALUE *ptr;
-	int overflow;
-    } markstack;
+    mark_queue_t mark_queue;
     struct {
 	int run;
 	gc_profile_record *record;
@@ -287,9 +297,6 @@ int *ruby_initial_gc_stress_ptr = &rb_objspace.gc_stress;
 #define finalizing		objspace->flags.finalizing
 #define finalizer_table 	objspace->final.table
 #define deferred_final_list	objspace->final.deferred
-#define mark_stack		objspace->markstack.buffer
-#define mark_stack_ptr		objspace->markstack.ptr
-#define mark_stack_overflow	objspace->markstack.overflow
 #define global_List		objspace->global_list
 #define ruby_gc_stress		objspace->gc_stress
 #define initial_malloc_limit	initial_params.initial_malloc_limit
@@ -379,6 +386,7 @@ rb_objspace_alloc(void)
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
 static void aligned_free(void *);
+static void free_mark_queue(rb_objspace_t *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -413,6 +421,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
+    free_mark_queue(objspace);
     free(objspace);
 }
 #endif
@@ -2060,6 +2069,145 @@ gc_sweep(rb_objspace_t *objspace)
     during_gc = 0;
 }
 
+/* Marking queue */
+
+static mark_buffer_t *
+alloc_mark_buffer(rb_objspace_t *objspace)
+{
+    mark_buffer_t *res;
+
+    res = malloc(sizeof(mark_buffer_t));
+    if (!res)
+        rb_memerror();
+
+    res->next = NULL;
+    res->num = res->head = 0;
+    return res;
+}
+
+static void
+free_mark_buffer(rb_objspace_t *objspace, mark_buffer_t *buf)
+{
+    mark_buffer_t *free = objspace->mark_queue.free;
+
+    buf->num = buf->head = 0;
+    buf->next = free;
+    objspace->mark_queue.free = buf;
+    objspace->mark_queue.free_size++;
+}
+
+static void
+free_mark_queue(rb_objspace_t *objspace)
+{
+    mark_buffer_t *buf, *next;
+
+    next = NULL;
+    buf = objspace->mark_queue.free;
+    while (buf != NULL) {
+        next = buf->next;
+        free(buf);
+        objspace->mark_queue.free_size--;
+        buf = next;
+    }
+
+    next = NULL;
+    buf = objspace->mark_queue.head;
+    while (buf != NULL) {
+        next = buf->next;
+        free(buf);
+        buf = next;
+    }
+}
+
+static void
+enqueue_mark_buffer(rb_objspace_t *objspace)
+{
+    mark_buffer_t *free;
+
+    if (objspace->mark_queue.free == NULL) {
+        free = alloc_mark_buffer(objspace);
+    }
+    else {
+        free = objspace->mark_queue.free;
+        objspace->mark_queue.free = free->next;
+        objspace->mark_queue.free_size--;
+    }
+    free->next = NULL;
+    free->num = free->head = 0;
+    if (objspace->mark_queue.tail) {
+        objspace->mark_queue.tail->next = free;
+    }
+    else {
+        free->next = NULL;
+        objspace->mark_queue.head = free;
+    }
+    objspace->mark_queue.tail = free;
+}
+
+static int
+dequeue_mark_buffer(rb_objspace_t *objspace, mark_buffer_t **buf)
+{
+    mark_buffer_t *head;
+
+    head = objspace->mark_queue.head;
+    if (head != NULL) {
+        *buf = head;
+        objspace->mark_queue.head = head->next;
+        if (objspace->mark_queue.head == NULL)
+            objspace->mark_queue.tail = NULL;
+        head->next = NULL;
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
+static void
+enqueue_mark_data(rb_objspace_t *objspace, VALUE data)
+{
+    mark_buffer_t *tail;
+
+    tail = objspace->mark_queue.tail;
+    if (tail == NULL)
+        enqueue_mark_buffer(objspace);
+
+    tail = objspace->mark_queue.tail;
+    if (tail->num < MARK_BUFFER_SIZE) {
+        tail->data[(tail->head + tail->num) % MARK_BUFFER_SIZE] = data;
+        tail->num++;
+    }
+    else {
+        enqueue_mark_buffer(objspace);
+        tail = objspace->mark_queue.tail;
+        tail->data[(tail->head + tail->num) % MARK_BUFFER_SIZE] = data;
+        tail->num++;
+    }
+}
+
+static int
+dequeue_mark_data(rb_objspace_t *objspace, VALUE *data)
+{
+    mark_buffer_t *head;
+
+    head = objspace->mark_queue.head;
+    if (head == NULL)
+        return FALSE;
+
+    if (head->num > 0) {
+        *data = head->data[head->head];
+        head->head = (head->head + 1) % MARK_BUFFER_SIZE;
+        head->num--;
+        if (head->num == 0) {
+            objspace->mark_queue.head = head->next;
+            if (objspace->mark_queue.head == NULL)
+                objspace->mark_queue.tail = NULL;
+        }
+        return TRUE;
+    } else {
+        return FALSE;
+    }
+}
+
 /* Marking */
 
 #define MARK_IN_BITMAP(bits, p) (bits[BITMAP_INDEX(p)] = bits[BITMAP_INDEX(p)] | ((uintptr_t)1 << BITMAP_OFFSET(p)))
@@ -2097,7 +2245,6 @@ ruby_get_stack_grow_direction(volatile VALUE *addr)
 #endif
 
 #define GC_LEVEL_MAX 250
-#define STACKFRAME_FOR_GC_MARK (GC_LEVEL_MAX * GC_MARK_STACKFRAME_WORD)
 
 size_t
 ruby_stack_length(VALUE **p)
@@ -2134,13 +2281,6 @@ ruby_stack_check(void)
 #else
     return stack_check(STACKFRAME_FOR_CALL_CFUNC);
 #endif
-}
-
-static void
-init_mark_stack(rb_objspace_t *objspace)
-{
-    mark_stack_overflow = 0;
-    mark_stack_ptr = mark_stack;
 }
 
 static void
@@ -2400,19 +2540,7 @@ gc_mark(rb_objspace_t *objspace, VALUE ptr, int lev)
     if (obj->as.basic.flags == 0) return;       /* free cell */
     if (!gc_mark_ptr(objspace, ptr)) return;	/* already marked */
 
-    if (lev > GC_LEVEL_MAX || (lev == 0 && stack_check(STACKFRAME_FOR_GC_MARK))) {
-	if (!mark_stack_overflow) {
-	    if (mark_stack_ptr - mark_stack < MARK_STACK_MAX) {
-		*mark_stack_ptr = ptr;
-		mark_stack_ptr++;
-	    }
-	    else {
-		mark_stack_overflow = 1;
-	    }
-	}
-	return;
-    }
-    gc_mark_children(objspace, ptr, lev+1);
+    enqueue_mark_data(objspace, ptr);
 }
 
 void
@@ -2712,47 +2840,12 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr, int lev)
 }
 
 static void
-gc_mark_all(rb_objspace_t *objspace)
-{
-    RVALUE *p, *pend;
-    size_t i;
-
-    init_mark_stack(objspace);
-    for (i = 0; i < heaps_used; i++) {
-	p = objspace->heap.sorted[i].start; pend = objspace->heap.sorted[i].end;
-	while (p < pend) {
-	    if (MARKED_IN_BITMAP(GET_HEAP_BITMAP(p), p) &&
-		p->as.basic.flags) {
-		gc_mark_children(objspace, (VALUE)p, 0);
-	    }
-	    p++;
-	}
-    }
-}
-
-static void
-gc_mark_rest(rb_objspace_t *objspace)
-{
-    VALUE tmp_arry[MARK_STACK_MAX];
-    VALUE *p;
-
-    p = (mark_stack_ptr - mark_stack) + tmp_arry;
-    MEMCPY(tmp_arry, mark_stack, VALUE, p - tmp_arry);
-
-    init_mark_stack(objspace);
-    while (p != tmp_arry) {
-	p--;
-	gc_mark_children(objspace, *p, 0);
-    }
-}
-
-#define MARK_STACK_EMPTY (mark_stack_ptr == mark_stack)
-
-static void
 gc_marks(rb_objspace_t *objspace)
 {
     struct gc_list *list;
     rb_thread_t *th = GET_THREAD();
+    mark_buffer_t *buf;
+    VALUE ptr;
     gc_prof_mark_timer_start(objspace);
 
     objspace->heap.live_num = 0;
@@ -2760,8 +2853,6 @@ gc_marks(rb_objspace_t *objspace)
 
 
     SET_STACK_END;
-
-    init_mark_stack(objspace);
 
     th->vm->self ? rb_gc_mark(th->vm->self) : rb_vm_mark(th->vm);
 
@@ -2787,15 +2878,25 @@ gc_marks(rb_objspace_t *objspace)
 
     rb_gc_mark_unlinked_live_method_entries(th->vm);
 
-    /* gc_mark objects whose marking are not completed*/
-    while (!MARK_STACK_EMPTY) {
-	if (mark_stack_overflow) {
-	    gc_mark_all(objspace);
-	}
-	else {
-	    gc_mark_rest(objspace);
-	}
+    /* marking-loop */
+    while (TRUE) {
+        int i;
+        while (objspace->mark_queue.head != objspace->mark_queue.tail) {
+            if (!dequeue_mark_buffer(objspace, &buf))
+                break;
+            for (i=0; i < buf->num; i++) {
+                gc_mark_children(objspace, buf->data[i], 0);
+            }
+            free_mark_buffer(objspace, buf);
+        }
+        if (dequeue_mark_data(objspace, &ptr)) {
+            gc_mark_children(objspace, ptr, 0);
+        }
+        else {
+            break;
+        }
     }
+
     gc_prof_mark_timer_stop(objspace);
 }
 
@@ -4189,6 +4290,86 @@ gc_profile_disable(void)
  *  GC::Profiler.
  */
 
+VALUE
+gc_test(void)
+{
+    int i, res;
+    mark_buffer_t *buf;
+    VALUE bufv;
+    rb_objspace_t *objspace = &rb_objspace;
+
+    puts("-- enqueue_mark_data --");
+
+    for (i=0; i < MARK_BUFFER_SIZE*3; i++) {
+        enqueue_mark_data(objspace, 1);
+    }
+    assert(objspace->mark_queue.head->data[0] == 1);
+    assert(objspace->mark_queue.head->data[MARK_BUFFER_SIZE-1] == 1);
+    assert(objspace->mark_queue.head->num == MARK_BUFFER_SIZE);
+    assert(objspace->mark_queue.head->next->data[0] == 1);
+    assert(objspace->mark_queue.head->next->data[MARK_BUFFER_SIZE-1] == 1);
+    assert(objspace->mark_queue.head->next->num == MARK_BUFFER_SIZE);
+    assert(objspace->mark_queue.head->next->next->data[0] == 1);
+    assert(objspace->mark_queue.head->next->next->data[MARK_BUFFER_SIZE-1] == 1);
+    assert(objspace->mark_queue.head->next->next->num == MARK_BUFFER_SIZE);
+    assert(objspace->mark_queue.head->next->next->next == NULL);
+
+    puts("-- dequeue_mark_buffer --");
+    dequeue_mark_buffer(objspace, &buf);
+    assert(buf->data[0] == 1);
+    assert(buf->data[MARK_BUFFER_SIZE-1] == 1);
+    buf = NULL;
+
+    dequeue_mark_buffer(objspace, &buf);
+    assert(buf->data[0] == 1);
+    assert(buf->data[MARK_BUFFER_SIZE-1] == 1);
+    buf = NULL;
+
+    res = dequeue_mark_buffer(objspace, &buf);
+    assert(buf->data[0] == 1);
+    assert(buf->data[MARK_BUFFER_SIZE-1] == 1);
+    assert(res == 1);
+    buf = NULL;
+
+    res = dequeue_mark_buffer(objspace, &buf);
+    assert(res == 0);
+
+    puts("-- enqueue_mark_buffer --");
+
+    assert(objspace->mark_queue.head == NULL);
+    assert(objspace->mark_queue.tail == NULL);
+    enqueue_mark_buffer(objspace);
+    assert(objspace->mark_queue.head->num == 0);
+    assert(objspace->mark_queue.tail == objspace->mark_queue.head);
+
+    puts("-- free_mark_buffer --");
+    dequeue_mark_buffer(objspace, &buf);
+    assert(objspace->mark_queue.head == NULL);
+    assert(objspace->mark_queue.tail == NULL);
+    free_mark_buffer(objspace, buf);
+    assert(objspace->mark_queue.free_size == 1);
+    assert(objspace->mark_queue.free == buf);
+    assert(objspace->mark_queue.head == NULL);
+    assert(objspace->mark_queue.tail == NULL);
+    enqueue_mark_data(objspace, 1);
+    dequeue_mark_data(objspace, &bufv);
+    assert(objspace->mark_queue.free_size == 0);
+    assert(objspace->mark_queue.free == NULL);
+
+    puts("-- dequeue_mark_data --");
+    for (i=0; i < MARK_BUFFER_SIZE*3; i++) {
+        enqueue_mark_data(objspace, i);
+    }
+    for (i=0; i < MARK_BUFFER_SIZE*3; i++) {
+        res = dequeue_mark_data(objspace, &bufv);
+        assert(res == 1);
+        /* printf("%d == %d\n", bufv, i); */
+        assert(bufv == i);
+    }
+
+    return Qnil;
+}
+
 void
 Init_GC(void)
 {
@@ -4203,6 +4384,7 @@ Init_GC(void)
     rb_define_singleton_method(rb_mGC, "stress=", gc_stress_set, 1);
     rb_define_singleton_method(rb_mGC, "count", gc_count, 0);
     rb_define_singleton_method(rb_mGC, "stat", gc_stat, -1);
+    rb_define_singleton_method(rb_mGC, "test", gc_test, 0);
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
 
     rb_mProfiler = rb_define_module_under(rb_mGC, "Profiler");
