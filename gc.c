@@ -208,16 +208,16 @@ struct gc_list {
 
 #ifndef __LP64__
 /* 4KB / 4 - 2(for next field and malloc header) */
-#define PAGE_DATAS_SIZE 1022
+#define STACK_PAGE_SIZE 1022
 #else
 /* 4KB / 8 - 2 */
-#define PAGE_DATAS_SIZE 510
+#define STACK_PAGE_SIZE 510
 #endif
 
 #define MARK_STACK_PAGE_CACHE_LIMIT 4
 
 typedef struct stack_page {
-    VALUE datas[PAGE_DATAS_SIZE];
+    VALUE data[STACK_PAGE_SIZE];
     struct stack_page *next;
 } stack_page_t;
 
@@ -606,7 +606,7 @@ init_heap(rb_objspace_t *objspace)
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
     push_mark_stack_page(&objspace->mark_stack);
-    objspace->mark_stack.page_size = PAGE_DATAS_SIZE;
+    objspace->mark_stack.page_size = STACK_PAGE_SIZE;
 }
 
 static void
@@ -2083,6 +2083,9 @@ gc_sweep(rb_objspace_t *objspace)
 
 /* Marking stack */
 
+static void push_mark_stack(mark_stack_t *, VALUE);
+static int pop_mark_stack(mark_stack_t *, VALUE *);
+
 static stack_page_t *
 stack_page_alloc(void)
 {
@@ -2170,15 +2173,15 @@ free_stack_pages(mark_stack_t *stack)
 }
 
 static inline void
-stack_page_datas_store(mark_stack_t *stack, size_t index, VALUE data)
+stack_page_data_store(mark_stack_t *stack, size_t index, VALUE data)
 {
-    stack->page->datas[index] = data;
+    stack->page->data[index] = data;
 }
 
 static inline VALUE
-stack_page_datas_entry(mark_stack_t *stack, size_t index)
+stack_page_data_entry(mark_stack_t *stack, size_t index)
 {
-    return stack->page->datas[index];
+    return stack->page->data[index];
 }
 
 static void
@@ -2187,7 +2190,7 @@ push_mark_stack(mark_stack_t *stack, VALUE data)
     if (stack->page_index == stack->page_size) {
         push_mark_stack_page(stack);
     }
-    stack_page_datas_store(stack, stack->page_index++, data);
+    stack_page_data_store(stack, stack->page_index++, data);
 }
 
 static int
@@ -2197,11 +2200,11 @@ pop_mark_stack(mark_stack_t *stack, VALUE *data)
         return FALSE;
     }
     if (stack->page_index == 1) {
-        *data = stack_page_datas_entry(stack, --stack->page_index);
+        *data = stack_page_data_entry(stack, --stack->page_index);
         pop_mark_stack_page(stack);
         return TRUE;
     }
-    *data = stack_page_datas_entry(stack, --stack->page_index);
+    *data = stack_page_data_entry(stack, --stack->page_index);
     return TRUE;
 }
 
