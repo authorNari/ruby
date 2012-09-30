@@ -2104,15 +2104,6 @@ is_mark_stask_empty(mark_stack_t *stack)
     return stack->page == NULL;
 }
 
-static size_t
-mark_stask_size(mark_stack_t *stack)
-{
-    if (is_mark_stask_empty(stack)) {
-        return 0;
-    }
-    return stack->full_page_size + stack->page_index;
-}
-
 static void
 push_mark_stack_page(mark_stack_t *stack)
 {
