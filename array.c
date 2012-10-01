@@ -308,7 +308,7 @@ rb_ary_frozen_p(VALUE ary)
 static VALUE
 ary_alloc(VALUE klass)
 {
-    NEWOBJ_WITH(ary, struct RArray, klass, T_ARRAY);
+    NEWOBJ_OF(ary, struct RArray, klass, T_ARRAY);
     FL_SET_EMBED((VALUE)ary);
     ARY_SET_EMBED_LEN((VALUE)ary, 0);
 
@@ -435,7 +435,7 @@ ary_make_shared(VALUE ary)
 	return ary;
     }
     else {
-	NEWOBJ_WITH(shared, struct RArray, 0, T_ARRAY);
+	NEWOBJ_OF(shared, struct RArray, 0, T_ARRAY);
         FL_UNSET_EMBED(shared);
 
         ARY_SET_LEN((VALUE)shared, RARRAY_LEN(ary));

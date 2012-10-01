@@ -675,7 +675,7 @@ rb_newobj(void)
 }
 
 VALUE
-rb_newobj_with(VALUE klass, VALUE flags)
+rb_newobj_of(VALUE klass, VALUE flags)
 {
     VALUE obj;
 

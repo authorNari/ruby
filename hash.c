@@ -207,7 +207,7 @@ rb_hash_foreach(VALUE hash, int (*func)(ANYARGS), VALUE farg)
 static VALUE
 hash_alloc(VALUE klass)
 {
-    NEWOBJ_WITH(hash, struct RHash, klass, T_HASH);
+    NEWOBJ_OF(hash, struct RHash, klass, T_HASH);
 
     RHASH_IFNONE(hash) = Qnil;
 
@@ -223,7 +223,7 @@ rb_hash_new(void)
 VALUE
 rb_hash_dup(VALUE hash)
 {
-    NEWOBJ_WITH(ret, struct RHash,
+    NEWOBJ_OF(ret, struct RHash,
                 rb_obj_class(hash),
                 (RBASIC(hash)->flags)&(T_MASK|FL_EXIVAR|FL_TAINT|FL_UNTRUSTED));
     if (FL_TEST((hash), FL_EXIVAR))
