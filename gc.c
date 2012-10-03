@@ -206,28 +206,20 @@ struct gc_list {
     struct gc_list *next;
 };
 
-#ifndef __LP64__
-/* 4KB / 4 - 2(for next field and malloc header) */
-#define STACK_PAGE_SIZE 1022
-#else
-/* 4KB / 8 - 2 */
-#define STACK_PAGE_SIZE 510
-#endif
+#define STACK_CHUNK_SIZE 500
 
-#define MARK_STACK_PAGE_CACHE_LIMIT 4
-
-typedef struct stack_page {
-    VALUE data[STACK_PAGE_SIZE];
-    struct stack_page *next;
-} stack_page_t;
+typedef struct stack_chunk {
+    VALUE data[STACK_CHUNK_SIZE];
+    struct stack_chunk *next;
+} stack_chunk_t;
 
 typedef struct mark_stack {
-    stack_page_t *page;
-    stack_page_t *cache;
-    size_t page_index;
-    size_t page_size;
-    size_t full_page_size;
+    stack_chunk_t *chunk;
+    stack_chunk_t *cache;
+    size_t index;
+    size_t limit;
     size_t cache_size;
+    size_t unused_cache_size;
 } mark_stack_t;
 
 #ifndef CALC_EXACT_MALLOC_SIZE
@@ -357,6 +349,9 @@ static void negative_size_allocation_error(const char *);
 static void *aligned_malloc(size_t, size_t);
 static void aligned_free(void *);
 
+static void init_mark_stack(mark_stack_t *stack);
+static void free_stack_chunks(mark_stack_t *);
+
 static VALUE lazy_sweep_enable(void);
 static int garbage_collect(rb_objspace_t *);
 static int gc_lazy_sweep(rb_objspace_t *);
@@ -394,7 +389,6 @@ rb_objspace_alloc(void)
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
 static void aligned_free(void *);
-static void free_stack_pages(mark_stack_t *);
 
 void
 rb_objspace_free(rb_objspace_t *objspace)
@@ -429,7 +423,7 @@ rb_objspace_free(rb_objspace_t *objspace)
 	heaps_used = 0;
 	heaps = 0;
     }
-    free_stack_pages(&objspace->mark_stack);
+    free_stack_chunks(&objspace->mark_stack);
     free(objspace);
 }
 #endif
@@ -587,8 +581,6 @@ add_heap_slots(rb_objspace_t *objspace, size_t add)
     heaps_inc = 0;
 }
 
-static void push_mark_stack_page(mark_stack_t *);
-
 static void
 init_heap(rb_objspace_t *objspace)
 {
@@ -605,8 +597,7 @@ init_heap(rb_objspace_t *objspace)
 
     objspace->profile.invoke_time = getrusage_time();
     finalizer_table = st_init_numtable();
-    push_mark_stack_page(&objspace->mark_stack);
-    objspace->mark_stack.page_size = STACK_PAGE_SIZE;
+    init_mark_stack(&objspace->mark_stack);
 }
 
 static void
@@ -2085,13 +2076,14 @@ gc_sweep(rb_objspace_t *objspace)
 
 static void push_mark_stack(mark_stack_t *, VALUE);
 static int pop_mark_stack(mark_stack_t *, VALUE *);
+static void shrink_stack_chunk_cache(mark_stack_t *stack);
 
-static stack_page_t *
-stack_page_alloc(void)
+static stack_chunk_t *
+stack_chunk_alloc(void)
 {
-    stack_page_t *res;
+    stack_chunk_t *res;
 
-    res = malloc(sizeof(stack_page_t));
+    res = malloc(sizeof(stack_chunk_t));
     if (!res)
         rb_memerror();
 
@@ -2101,87 +2093,84 @@ stack_page_alloc(void)
 static inline int
 is_mark_stask_empty(mark_stack_t *stack)
 {
-    return stack->page == NULL;
+    return stack->chunk == NULL;
 }
 
 static void
-push_mark_stack_page(mark_stack_t *stack)
+add_stack_chunk_cache(mark_stack_t *stack, stack_chunk_t *chunk)
 {
-    stack_page_t *next;
-    int empty;
+    chunk->next = stack->cache;
+    stack->cache = chunk;
+    stack->cache_size++;
+}
 
-    assert(stack->page_index == stack->page_size);
+static void
+shrink_stack_chunk_cache(mark_stack_t *stack)
+{
+    stack_chunk_t *chunk;
+
+    if (stack->unused_cache_size > (stack->cache_size/2)) {
+        chunk = stack->cache;
+        stack->cache = stack->cache->next;
+        stack->cache_size--;
+        free(chunk);
+    }
+    stack->unused_cache_size = stack->cache_size;
+}
+
+static void
+push_mark_stack_chunk(mark_stack_t *stack)
+{
+    stack_chunk_t *next;
+
+    assert(stack->index == stack->limit);
     if (stack->cache_size > 0) {
         next = stack->cache;
         stack->cache = stack->cache->next;
         stack->cache_size--;
+        if (stack->unused_cache_size > stack->cache_size)
+            stack->unused_cache_size = stack->cache_size;
     }
     else {
-        next = stack_page_alloc();
+        next = stack_chunk_alloc();
     }
-    empty = is_mark_stask_empty(stack);
-    next->next = stack->page;
-    stack->page = next;
-    stack->page_index = 0;
-    if (!empty) {
-        stack->full_page_size += stack->page_size;
-    }
+    next->next = stack->chunk;
+    stack->chunk = next;
+    stack->index = 0;
 }
 
 static void
-pop_mark_stack_page(mark_stack_t *stack)
+pop_mark_stack_chunk(mark_stack_t *stack)
 {
-    stack_page_t *prev;
+    stack_chunk_t *prev;
 
-    prev = stack->page->next;
-    assert(stack->page_index == 0);
-    if (stack->cache_size < MARK_STACK_PAGE_CACHE_LIMIT) {
-        stack->page->next = stack->cache;
-        stack->cache = stack->page;
-        stack->cache_size++;
-    }
-    else {
-        free(stack->page);
-    }
-    stack->page = prev;
-    stack->page_index = stack->page_size;
-    if (prev != NULL) {
-        stack->full_page_size -= stack->page_size;
-    }
+    prev = stack->chunk->next;
+    assert(stack->index == 0);
+    add_stack_chunk_cache(stack, stack->chunk);
+    stack->chunk = prev;
+    stack->index = stack->limit;
 }
 
 static void
-free_stack_pages(mark_stack_t *stack)
+free_stack_chunks(mark_stack_t *stack)
 {
-    stack_page_t *page = stack->page;
-    stack_page_t *next = NULL;
+    stack_chunk_t *chunk = stack->chunk;
+    stack_chunk_t *next = NULL;
 
-    while (page != NULL) {
-        next = page->next;
-        free(page);
-        page = next;
+    while (chunk != NULL) {
+        next = chunk->next;
+        free(chunk);
+        chunk = next;
     }
-}
-
-static inline void
-stack_page_data_store(mark_stack_t *stack, size_t index, VALUE data)
-{
-    stack->page->data[index] = data;
-}
-
-static inline VALUE
-stack_page_data_entry(mark_stack_t *stack, size_t index)
-{
-    return stack->page->data[index];
 }
 
 static void
 push_mark_stack(mark_stack_t *stack, VALUE data)
 {
-    if (stack->page_index == stack->page_size) {
-        push_mark_stack_page(stack);
+    if (stack->index == stack->limit) {
+        push_mark_stack_chunk(stack);
     }
-    stack_page_data_store(stack, stack->page_index++, data);
+    stack->chunk->data[stack->index++] = data;
 }
 
 static int
@@ -2190,14 +2179,29 @@ pop_mark_stack(mark_stack_t *stack, VALUE *data)
     if (is_mark_stask_empty(stack)) {
         return FALSE;
     }
-    if (stack->page_index == 1) {
-        *data = stack_page_data_entry(stack, --stack->page_index);
-        pop_mark_stack_page(stack);
+    if (stack->index == 1) {
+        *data = stack->chunk->data[--stack->index];
+        pop_mark_stack_chunk(stack);
         return TRUE;
     }
-    *data = stack_page_data_entry(stack, --stack->page_index);
+    *data = stack->chunk->data[--stack->index];
     return TRUE;
 }
+
+static void
+init_mark_stack(mark_stack_t *stack)
+{
+    int i;
+
+    push_mark_stack_chunk(stack);
+    stack->limit = STACK_CHUNK_SIZE;
+
+    for(i=0; i < 4; i++) {
+        add_stack_chunk_cache(stack, stack_chunk_alloc());
+    }
+    stack->unused_cache_size = stack->cache_size;
+}
+
 
 /* Marking */
 
@@ -2867,6 +2871,7 @@ gc_marks(rb_objspace_t *objspace)
     while (pop_mark_stack(mstack, &obj)) {
         gc_mark_children(objspace, obj);
     }
+    shrink_stack_chunk_cache(mstack);
 
     gc_prof_mark_timer_stop(objspace);
 }
@@ -4196,6 +4201,46 @@ gc_profile_disable(void)
     return Qnil;
 }
 
+VALUE
+rb_gc_test(void)
+{
+    rb_objspace_t *objspace = &rb_objspace;
+    mark_stack_t *stack = &objspace->mark_stack;
+    size_t i;
+
+    puts("init_mark_stack");
+    assert(stack->cache_size == 4);
+
+    puts("push_mark_stack");
+    for (i=0; i < (STACK_CHUNK_SIZE*4+1); i++) {
+        push_mark_stack(stack, (VALUE)i);
+    }
+    assert(stack->cache_size == 0);
+    assert(stack->unused_cache_size == 0);
+
+    {
+        VALUE res;
+
+        puts("pop_mark_stack");
+        for (i=0; i < (STACK_CHUNK_SIZE*4+1); i++) {
+            pop_mark_stack(stack, &res);
+        }
+    }
+    printf("stack->cache_size = %d, stack->unused_cache_size = %d\n",
+           stack->cache_size, stack->unused_cache_size);
+    assert(stack->cache_size == 5);
+    assert(stack->unused_cache_size == 0);
+
+    puts("shrink_stack_chunk_cache");
+    shrink_stack_chunk_cache(stack);
+    assert(stack->cache_size == 5);
+    assert(stack->unused_cache_size == 5);
+    stack->unused_cache_size = 5;
+    shrink_stack_chunk_cache(stack);
+    assert(stack->cache_size == 4);
+    assert(stack->unused_cache_size == 4);
+}
+
 /*
  * Document-class: ObjectSpace
  *
@@ -4275,6 +4320,7 @@ Init_GC(void)
     rb_define_singleton_method(rb_mGC, "stress=", gc_stress_set, 1);
     rb_define_singleton_method(rb_mGC, "count", gc_count, 0);
     rb_define_singleton_method(rb_mGC, "stat", gc_stat, -1);
+    rb_define_singleton_method(rb_mGC, "test", rb_gc_test, 0);
     rb_define_method(rb_mGC, "garbage_collect", rb_gc_start, 0);
 
     rb_mProfiler = rb_define_module_under(rb_mGC, "Profiler");
