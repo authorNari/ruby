@@ -4206,7 +4206,7 @@ rb_gc_test(void)
 {
     rb_objspace_t *objspace = &rb_objspace;
     mark_stack_t *stack = &objspace->mark_stack;
-    size_t i;
+    int i;
 
     puts("init_mark_stack");
     assert(stack->cache_size == 4);
@@ -4239,6 +4239,19 @@ rb_gc_test(void)
     shrink_stack_chunk_cache(stack);
     assert(stack->cache_size == 4);
     assert(stack->unused_cache_size == 4);
+
+    {
+        VALUE res;
+        puts("push and pop");
+        for (i=0; i < (STACK_CHUNK_SIZE*10); i++) {
+            push_mark_stack(stack, (VALUE)i);
+        }
+        i--;
+        for (; i >= 0; i--) {
+            pop_mark_stack(stack, &res);
+            assert(res == i);
+        }
+    }
 }
 
 /*
