@@ -1317,6 +1317,7 @@ static int
 obj_free(rb_objspace_t *objspace, VALUE obj)
 {
     gc_event_hook(objspace, RUBY_INTERNAL_EVENT_FREEOBJ, obj);
+    OBJ_UNPROTECT(obj);
 
     switch (BUILTIN_TYPE(obj)) {
       case T_NIL:
