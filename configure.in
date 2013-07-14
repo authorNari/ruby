@@ -2715,6 +2715,8 @@ AC_ARG_WITH(valgrind,
         [], with_valgrind=yes)
 AS_IF([test x$with_valgrind != xno],
         [AC_CHECK_HEADERS(valgrind/memcheck.h)])
+AS_IF([test x$with_valgrind != xno],
+        [AC_CHECK_HEADERS(valgrind/objgrind.h)])
 
 dln_a_out_works=no
 if test "$ac_cv_header_a_out_h" = yes; then

@@ -148,6 +148,7 @@ memfill(register VALUE *mem, register long size, register VALUE val)
 static void
 ary_resize_capa(VALUE ary, long capacity)
 {
+    int protected = OBJ_PROTECTED(ary);
     assert(RARRAY_LEN(ary) <= capacity);
     assert(!OBJ_FROZEN(ary));
     assert(!ARY_SHARED_P(ary));
@@ -155,25 +156,35 @@ ary_resize_capa(VALUE ary, long capacity)
         if (ARY_EMBED_P(ary)) {
             long len = ARY_EMBED_LEN(ary);
             VALUE *ptr = ALLOC_N(VALUE, (capacity));
+	    if (protected)
+		OBJ_UNPROTECT(ary);
             MEMCPY(ptr, ARY_EMBED_PTR(ary), VALUE, len);
             FL_UNSET_EMBED(ary);
             ARY_SET_PTR(ary, ptr);
             ARY_SET_HEAP_LEN(ary, len);
         }
         else {
+	    if (protected)
+		OBJ_UNPROTECT(ary);
             REALLOC_N(RARRAY(ary)->as.heap.ptr, VALUE, (capacity));
         }
         ARY_SET_CAPA(ary, (capacity));
+	if (protected)
+	    OBJ_PROTECT(ary);
     }
     else {
         if (!ARY_EMBED_P(ary)) {
             long len = RARRAY_LEN(ary);
             VALUE *ptr = RARRAY_PTR(ary);
+	    if (protected)
+		OBJ_UNPROTECT(ary);
             if (len > capacity) len = capacity;
             MEMCPY((VALUE *)RARRAY(ary)->as.ary, ptr, VALUE, len);
             FL_SET_EMBED(ary);
             ARY_SET_LEN(ary, len);
             xfree(ptr);
+	    if (protected)
+		OBJ_PROTECT(ary);
         }
     }
 }
@@ -183,10 +194,16 @@ ary_shrink_capa(VALUE ary)
 {
     long capacity = ARY_HEAP_LEN(ary);
     long old_capa = RARRAY(ary)->as.heap.aux.capa;
+    int protected = OBJ_PROTECTED(ary);
     assert(!ARY_SHARED_P(ary));
     assert(old_capa >= capacity);
-    if (old_capa > capacity)
+    if (old_capa > capacity) {
+	if (protected)
+	    OBJ_UNPROTECT(ary);
 	REALLOC_N(RARRAY(ary)->as.heap.ptr, VALUE, capacity);
+	if (protected)
+	    OBJ_PROTECT(ary);
+    }
 }
 
 static void
@@ -266,29 +283,42 @@ rb_ary_modify(VALUE ary)
     if (ARY_SHARED_P(ary)) {
         long len = RARRAY_LEN(ary);
 	VALUE shared = ARY_SHARED(ary);
+	int protected = OBJ_PROTECTED(ary);
         if (len <= RARRAY_EMBED_LEN_MAX) {
 	    const VALUE *ptr = ARY_HEAP_PTR(ary);
+	    if (protected)
+		OBJ_UNPROTECT(ary);
             FL_UNSET_SHARED(ary);
             FL_SET_EMBED(ary);
 	    MEMCPY((VALUE *)ARY_EMBED_PTR(ary), ptr, VALUE, len);
             rb_ary_decrement_share(shared);
             ARY_SET_EMBED_LEN(ary, len);
+	    if (protected)
+		OBJ_PROTECT(ary);
         }
 	else if (ARY_SHARED_NUM(shared) == 1 && len > (RARRAY_LEN(shared)>>1)) {
 	    long shift = RARRAY_PTR(ary) - RARRAY_PTR(shared);
+	    if (protected)
+		OBJ_UNPROTECT(ary);
 	    FL_UNSET_SHARED(ary);
 	    ARY_SET_PTR(ary, RARRAY_PTR(shared));
 	    ARY_SET_CAPA(ary, RARRAY_LEN(shared));
 	    MEMMOVE(RARRAY_PTR(ary), RARRAY_PTR(ary)+shift, VALUE, len);
 	    FL_SET_EMBED(shared);
 	    rb_ary_decrement_share(shared);
+	    if (protected)
+		OBJ_PROTECT(ary);
 	}
         else {
             VALUE *ptr = ALLOC_N(VALUE, len);
+	    if (protected)
+		OBJ_UNPROTECT(ary);
             MEMCPY(ptr, RARRAY_PTR(ary), VALUE, len);
             rb_ary_unshare(ary);
             ARY_SET_CAPA(ary, len);
             ARY_SET_PTR(ary, ptr);
+	    if (protected)
+		OBJ_PROTECT(ary);
         }
     }
 }
@@ -702,6 +732,7 @@ rb_ary_initialize(int argc, VALUE *argv, VALUE ary)
 	}
     }
     else {
+	OBJ_UNPROTECT(ary);
 	RARRAY_PTR_USE(ary, ptr, {
 	    memfill((VALUE *)ptr, len, val);
 	});
@@ -1530,6 +1561,7 @@ VALUE
 rb_ary_resize(VALUE ary, long len)
 {
     long olen;
+    int protected = OBJ_PROTECTED(ary);
 
     rb_ary_modify(ary);
     olen = RARRAY_LEN(ary);
@@ -1549,15 +1581,23 @@ rb_ary_resize(VALUE ary, long len)
     }
     else if (len <= RARRAY_EMBED_LEN_MAX) {
 	VALUE tmp[RARRAY_EMBED_LEN_MAX];
+	if (protected)
+	    OBJ_UNPROTECT(ary);
 	MEMCPY(tmp, ARY_HEAP_PTR(ary), VALUE, len);
 	ary_discard(ary);
 	MEMCPY((VALUE *)ARY_EMBED_PTR(ary), tmp, VALUE, len);
         ARY_SET_EMBED_LEN(ary, len);
+	if (protected)
+	    OBJ_PROTECT(ary);
     }
     else {
 	if (olen > len + ARY_DEFAULT_SIZE) {
+	    if (protected)
+		OBJ_UNPROTECT(ary);
 	    REALLOC_N(RARRAY(ary)->as.heap.ptr, VALUE, len);
 	    ARY_SET_CAPA(ary, len);
+	    if (protected)
+		OBJ_PROTECT(ary);
 	}
 	ARY_SET_HEAP_LEN(ary, len);
     }

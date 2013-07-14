@@ -1299,12 +1299,27 @@ rb_obj_written(VALUE a, VALUE oldv, VALUE b, const char *filename, int line)
     return a;
 }
 
+#ifdef HAVE_VALGRIND_OBJGRIND_H
+void rb_obj_protect(VALUE obj);
+int rb_obj_protected(VALUE obj);
+void rb_obj_unprotect(VALUE obj);
+#define OBJ_PROTECT(obj) rb_obj_protect(obj)
+#define OBJ_PROTECTED(obj) rb_obj_protected(obj)
+#define OBJ_UNPROTECT(obj) rb_obj_unprotect(obj)
+#else
+#define OBJ_PROTECT(obj)
+#define OBJ_PROTECTED(obj) 0
+#define OBJ_UNPROTECT(obj)
+#endif
+
 static inline VALUE
 rb_obj_write(VALUE a, VALUE *slot, VALUE b, const char *filename, int line)
 {
 #ifdef RGENGC_LOGGING_WRIET
     RGENGC_LOGGING_WRIET(a, slot, b, filename, line);
 #endif
+
+    OBJ_UNPROTECT(a);
 
     *slot = b;
 
@@ -1724,6 +1739,7 @@ rb_special_const_p(VALUE obj)
 
 #include "ruby/missing.h"
 #include "ruby/intern.h"
+#include <valgrind/objgrind.h>
 
 #if defined(EXTLIB) && defined(USE_DLN_A_OUT)
 /* hook for external modules */

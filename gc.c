@@ -619,6 +619,121 @@ is_before_sweep(VALUE obj)
     return FALSE;
 }
 
+#ifdef HAVE_VALGRIND_OBJGRIND_H
+int
+rb_obj_protected(VALUE obj)
+{
+    RVALUE *o = ((RVALUE *)obj);
+
+    switch (BUILTIN_TYPE(obj)) {
+      case T_ARRAY:
+	if (FL_TEST(obj, ELTS_SHARED)) {
+	    return VALGRIND_CHECK_UNWRITABLE(&o->as.array.as.heap.aux.shared);
+	}
+	else {
+	    if (RBASIC(o)->flags & RARRAY_EMBED_FLAG) {
+		return VALGRIND_CHECK_UNWRITABLE(&o->as.array.as.ary);
+	    }
+	    else {
+		if (o->as.array.as.heap.ptr == NULL) return FALSE;
+		return VALGRIND_CHECK_UNWRITABLE(o->as.array.as.heap.ptr);
+	    }
+	}
+	break;
+      case T_RATIONAL:
+	return VALGRIND_CHECK_UNWRITABLE(&o->as.rational.num);
+      case T_COMPLEX:
+	return VALGRIND_CHECK_UNWRITABLE(&o->as.complex.real);
+    }
+    return FALSE;
+}
+
+void
+rb_obj_unprotect(VALUE obj)
+{
+    RVALUE *o = ((RVALUE *)obj);
+
+    if (RBASIC(obj)->klass == 0) return;
+
+    switch (BUILTIN_TYPE(obj)) {
+      case T_ARRAY:
+	if (FL_TEST(obj, ELTS_SHARED)) {
+	    VALGRIND_MAKE_NOCHECK(&o->as.array.as.heap.aux.shared, sizeof(VALUE));
+	}
+	else {
+	    if (RBASIC(o)->flags & RARRAY_EMBED_FLAG) {
+		VALGRIND_MAKE_NOCHECK(&o->as.array.as.ary, sizeof(VALUE) * RARRAY_EMBED_LEN_MAX);
+	    }
+	    else {
+		if (o->as.array.as.heap.ptr == NULL) return;
+		VALGRIND_MAKE_NOCHECK(o->as.array.as.heap.ptr,
+				      sizeof(VALUE) * o->as.array.as.heap.aux.capa);
+	    }
+	}
+	break;
+      case T_RATIONAL:
+	VALGRIND_MAKE_NOCHECK(&o->as.rational.num, sizeof(VALUE));
+	VALGRIND_MAKE_NOCHECK(&o->as.rational.den, sizeof(VALUE));
+	break;
+      case T_COMPLEX:
+	VALGRIND_MAKE_NOCHECK(&o->as.complex.real, sizeof(VALUE));
+	VALGRIND_MAKE_NOCHECK(&o->as.complex.imag, sizeof(VALUE));
+	break;
+    }
+}
+
+void
+rb_obj_protect(VALUE obj)
+{
+    RVALUE *o = RANY(obj);
+
+    switch (BUILTIN_TYPE(obj)) {
+      case T_ARRAY:
+	if (FL_TEST(obj, ELTS_SHARED)) {
+	    VALGRIND_MAKE_UNWRITABLE(&o->as.array.as.heap.aux.shared, sizeof(VALUE));
+	}
+	else {
+	    if (RBASIC(o)->flags & RARRAY_EMBED_FLAG) {
+		VALGRIND_MAKE_UNWRITABLE(&o->as.array.as.ary, sizeof(VALUE) * RARRAY_EMBED_LEN_MAX);
+	    }
+	    else {
+		VALGRIND_MAKE_UNWRITABLE(o->as.array.as.heap.ptr,
+					 sizeof(VALUE) * o->as.array.as.heap.aux.capa);
+	    }
+	}
+	break;
+      case T_RATIONAL:
+	VALGRIND_MAKE_UNWRITABLE(&o->as.rational.num, sizeof(VALUE));
+	VALGRIND_MAKE_UNWRITABLE(&o->as.rational.den, sizeof(VALUE));
+	break;
+      case T_COMPLEX:
+	VALGRIND_MAKE_UNWRITABLE(&o->as.complex.real, sizeof(VALUE));
+	VALGRIND_MAKE_UNWRITABLE(&o->as.complex.imag, sizeof(VALUE));
+	break;
+    }
+}
+
+static void
+all_old_object_protect(rb_objspace_t *objspace)
+{
+    size_t i;
+    RVALUE *p, *pend;
+
+    i = 0;
+    while (i < heaps_used) {
+	p = objspace->heap.sorted[i]->start;
+	pend = p + objspace->heap.sorted[i]->limit;
+
+	for (; p != pend; p++) {
+	    if (p->as.basic.flags && RVALUE_PROMOTED(p)) {
+		rb_obj_protect((VALUE)p);
+	    }
+	}
+	i++;
+    }
+}
+#endif
+
 static inline void
 RVALUE_DEMOTE(VALUE obj)
 {
@@ -963,6 +1078,7 @@ newobj_of(VALUE klass, VALUE flags, VALUE v1, VALUE v2, VALUE v3)
     }
 
     /* OBJSETUP */
+    MEMZERO(RANY(obj), RVALUE, 1);
     RBASIC(obj)->flags = flags;
     RBASIC_SET_CLASS(obj, klass);
     if (rb_safe_level() >= 3) FL_SET((obj), FL_TAINT);
@@ -3750,6 +3866,12 @@ gc_marks(rb_objspace_t *objspace, int minor_gc)
 	objspace->mark_func_data = prev_mark_func_data;
     }
     gc_prof_mark_timer_stop(objspace);
+
+#ifdef HAVE_VALGRIND_OBJGRIND_H
+    if (minor_gc == FALSE) {
+	all_old_object_protect(objspace);
+    }
+#endif
 }
 
 /* RGENGC */
