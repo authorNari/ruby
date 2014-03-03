@@ -742,6 +742,9 @@ int rb_is_junk_name(VALUE name);
 void rb_gc_mark_parser(void);
 void rb_gc_mark_symbols(int full_mark);
 ID rb_make_internal_id(void);
+void rb_gc_mark_dsymbol(VALUE);
+void rb_gc_free_dsymbol(VALUE);
+VALUE rb_str_dynamic_intern(VALUE s);
 
 /* proc.c */
 VALUE rb_proc_location(VALUE self);

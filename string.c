@@ -7347,6 +7347,8 @@ rb_str_crypt(VALUE str, VALUE salt)
  *     'cat and dog'.to_sym   #=> :"cat and dog"
  */
 
+VALUE rb_str_dynamic_intern(VALUE);
+
 VALUE
 rb_str_intern(VALUE s)
 {
@@ -8466,7 +8468,7 @@ sym_to_proc(VALUE sym)
 static VALUE
 sym_succ(VALUE sym)
 {
-    return rb_str_intern(rb_str_succ(rb_sym_to_s(sym)));
+    return rb_str_dynamic_intern(rb_str_succ(rb_sym_to_s(sym)));
 }
 
 /*
@@ -8550,7 +8552,7 @@ sym_aref(int argc, VALUE *argv, VALUE sym)
 static VALUE
 sym_length(VALUE sym)
 {
-    return rb_str_length(rb_id2str(SYM2ID(sym)));
+    return rb_str_length(rb_sym2str(sym));
 }
 
 /*
@@ -8563,7 +8565,7 @@ sym_length(VALUE sym)
 static VALUE
 sym_empty(VALUE sym)
 {
-    return rb_str_empty(rb_id2str(SYM2ID(sym)));
+    return rb_str_empty(rb_sym2str(sym));
 }
 
 /*
@@ -8576,7 +8578,7 @@ sym_empty(VALUE sym)
 static VALUE
 sym_upcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_upcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_upcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8589,7 +8591,7 @@ sym_upcase(VALUE sym)
 static VALUE
 sym_downcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_downcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_downcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8602,7 +8604,7 @@ sym_downcase(VALUE sym)
 static VALUE
 sym_capitalize(VALUE sym)
 {
-    return rb_str_intern(rb_str_capitalize(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_capitalize(rb_sym2str(sym)));
 }
 
 /*
@@ -8615,7 +8617,7 @@ sym_capitalize(VALUE sym)
 static VALUE
 sym_swapcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_swapcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_swapcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8628,7 +8630,7 @@ sym_swapcase(VALUE sym)
 static VALUE
 sym_encoding(VALUE sym)
 {
-    return rb_obj_encoding(rb_id2str(SYM2ID(sym)));
+    return rb_obj_encoding(rb_sym2str(sym));
 }
 
 ID
@@ -8740,8 +8742,8 @@ Init_String(void)
     rb_define_method(rb_cString, "<<", rb_str_concat, 1);
     rb_define_method(rb_cString, "prepend", rb_str_prepend, 1);
     rb_define_method(rb_cString, "crypt", rb_str_crypt, 1);
-    rb_define_method(rb_cString, "intern", rb_str_intern, 0);
-    rb_define_method(rb_cString, "to_sym", rb_str_intern, 0);
+    rb_define_method(rb_cString, "intern", rb_str_dynamic_intern, 0);
+    rb_define_method(rb_cString, "to_sym", rb_str_dynamic_intern, 0);
     rb_define_method(rb_cString, "ord", rb_str_ord, 0);
 
     rb_define_method(rb_cString, "include?", rb_str_include, 1);

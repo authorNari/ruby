@@ -354,6 +354,7 @@ typedef struct RVALUE {
 	struct RMatch  match;
 	struct RRational rational;
 	struct RComplex complex;
+	struct RSymbol symbol;
 	struct {
 	    struct RBasic basic;
 	    VALUE v1;
@@ -1652,6 +1653,12 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	}
 	break;
 
+      case T_SYMBOL:
+	{
+            rb_gc_free_dsymbol(obj);
+	}
+	break;
+
       default:
 	rb_bug("gc_sweep(): unknown data type 0x%x(%p) 0x%"PRIxVALUE,
 	       BUILTIN_TYPE(obj), (void*)obj, RBASIC(obj)->flags);
@@ -2410,7 +2417,7 @@ rb_obj_id(VALUE obj)
      *  24 if 32-bit, double is 8-byte aligned
      *  40 if 64-bit
      */
-    if (SYMBOL_P(obj)) {
+    if (STATIC_SYM_P(obj)) {
         return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
     }
     else if (FLONUM_P(obj)) {
@@ -2516,6 +2523,7 @@ obj_memsize_of(VALUE obj, int use_tdata)
 	break;
 
       case T_FLOAT:
+      case T_SYMBOL:
 	break;
 
       case T_BIGNUM:
@@ -3963,6 +3971,13 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr)
 	    while (len--) {
 		gc_mark(objspace, *ptr++);
 	    }
+	}
+	break;
+
+      case T_SYMBOL:
+	{
+            ptr = obj->as.symbol.fstr;
+            goto again;
 	}
 	break;
 
