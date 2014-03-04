@@ -10899,12 +10899,38 @@ rb_is_junk_id(ID id)
 ID
 rb_check_id(volatile VALUE *namep)
 {
+    ID id;
+
+    id = rb_check_id_nopin(namep);
+    if (id && !(id & ID_STATIC_SYM)) {
+        rb_pin_dynamic_symbol((VALUE)id);
+    }
+
+    return id;
+}
+
+ID
+rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
+{
+    ID id;
+
+    id = rb_check_id_cstr_nopin(ptr, len, enc);
+    if (id && !(id & ID_STATIC_SYM)) {
+        rb_pin_dynamic_symbol((VALUE)id);
+    }
+
+    return id;
+}
+
+ID
+rb_check_id_nopin(volatile VALUE *namep)
+{
     st_data_t id;
     VALUE tmp;
     VALUE name = *namep;
 
     if (SYMBOL_P(name)) {
-	return SYM2ID(name);
+	return rb_sym2id_nopin(name);
     }
     else if (!RB_TYPE_P(name, T_STRING)) {
 	tmp = rb_check_string_type(name);
@@ -10919,7 +10945,7 @@ rb_check_id(volatile VALUE *namep)
 
     sym_check_asciionly(name);
 
-    if (lookup_sym_id((st_data_t)name, &id))
+    if (st_lookup(global_symbols.sym_id, (st_data_t)name, &id))
 	return (ID)id;
 
     if (rb_is_attrset_name(name)) {
@@ -10939,7 +10965,7 @@ rb_check_id(volatile VALUE *namep)
 }
 
 ID
-rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
+rb_check_id_cstr_nopin(const char *ptr, long len, rb_encoding *enc)
 {
     st_data_t id;
     struct RString fake_str;
@@ -10948,7 +10974,7 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
 
     sym_check_asciionly(name);
 
-    if (lookup_id_str((st_data_t)name, &id))
+    if (st_lookup(global_symbols.sym_id, (st_data_t)name, &id))
 	return (ID)id;
 
     if (rb_is_attrset_name(name)) {
