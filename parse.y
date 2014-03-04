@@ -10902,7 +10902,7 @@ rb_check_id(volatile VALUE *namep)
     ID id;
 
     id = rb_check_id_nopin(namep);
-    if (id && !(id & ID_STATIC_SYM)) {
+    if (id && !(id & ID_STATIC_SYM || id < tLAST_TOKEN)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
 
@@ -10915,7 +10915,7 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
     ID id;
 
     id = rb_check_id_cstr_nopin(ptr, len, enc);
-    if (id && !(id & ID_STATIC_SYM)) {
+    if (id && !(id & ID_STATIC_SYM || id < tLAST_TOKEN)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
 
