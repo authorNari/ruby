@@ -1108,7 +1108,7 @@ rb_mod_autoload(VALUE mod, VALUE sym, VALUE file)
 static VALUE
 rb_mod_autoload_p(VALUE mod, VALUE sym)
 {
-    ID id = rb_check_id(&sym);
+    ID id = rb_check_id_nopin(&sym);
     if (!id) {
 	return Qnil;
     }
