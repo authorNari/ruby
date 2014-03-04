@@ -8802,7 +8802,7 @@ static const char id_type_names[][9] = {
     "JUNK",
 };
 
-static ID rb_stick_dynamic_symbol(VALUE);
+static ID rb_pin_dynamic_symbol(VALUE);
 
 ID
 rb_id_attrset(ID id)
@@ -8839,7 +8839,7 @@ rb_id_attrset(ID id)
 	str = rb_str_dup(RSYMBOL((VALUE)id)->fstr);
 	rb_str_cat(str, "=", 1);
 	id = (ID)rb_str_dynamic_intern(str);
-	rb_stick_dynamic_symbol((VALUE)id);
+	rb_pin_dynamic_symbol((VALUE)id);
     }
     return id;
 }
@@ -10119,14 +10119,14 @@ static struct symbols {
     st_table *sym_id;
     st_table *id_str;
     st_table *id_dsym;
-    st_table *stick_dsym;
+    st_table *pinned_dsym;
 #if ENABLE_SELECTOR_NAMESPACE
     st_table *ivar2_id;
     st_table *id_ivar2;
 #endif
     VALUE op_sym[tLAST_OP_ID];
     int minor_marked;
-    int stick_dsym_minor_marked;
+    int pinned_dsym_minor_marked;
 } global_symbols = {tLAST_TOKEN};
 
 static const struct st_hash_type symhash = {
@@ -10166,7 +10166,7 @@ Init_sym(void)
 {
     global_symbols.sym_id = st_init_table_with_size(&symhash, 1000);
     global_symbols.id_str = st_init_numtable_with_size(1000);
-    global_symbols.stick_dsym = st_init_numtable_with_size(1000);
+    global_symbols.pinned_dsym = st_init_numtable_with_size(1000);
 #if ENABLE_SELECTOR_NAMESPACE
     global_symbols.ivar2_id = st_init_table_with_size(&ivar2_hash_type, 1000);
     global_symbols.id_ivar2 = st_init_numtable_with_size(1000);
@@ -10186,16 +10186,15 @@ rb_gc_mark_symbols(int full_mark)
 {
     if (full_mark || global_symbols.minor_marked == 0) {
 	rb_mark_tbl(global_symbols.id_str);
-	rb_mark_tbl(global_symbols.stick_dsym);
 	rb_gc_mark_locations(global_symbols.op_sym,
 			     global_symbols.op_sym + numberof(global_symbols.op_sym));
 
 	if (!full_mark) global_symbols.minor_marked = 1;
     }
 
-    if (full_mark || global_symbols.stick_dsym_minor_marked == 0) {
-	rb_mark_tbl(global_symbols.stick_dsym);
-	if (!full_mark) global_symbols.stick_dsym_minor_marked = 1;
+    if (full_mark || global_symbols.pinned_dsym_minor_marked == 0) {
+	rb_mark_tbl(global_symbols.pinned_dsym);
+	if (!full_mark) global_symbols.pinned_dsym_minor_marked = 1;
     }
 }
 #endif /* !RIPPER */
@@ -10434,11 +10433,11 @@ setup_fake_str(struct RString *fake_str, const char *name, long len)
 }
 
 ID
-rb_stick_dynamic_symbol(VALUE sym)
+rb_pin_dynamic_symbol(VALUE sym)
 {
     /* stick dynamic symbol */
-    if (!st_insert(global_symbols.stick_dsym, sym, (st_data_t)sym)) {
-	global_symbols.stick_dsym_minor_marked = 0;
+    if (!st_insert(global_symbols.pinned_dsym, sym, (st_data_t)sym)) {
+	global_symbols.pinned_dsym_minor_marked = 0;
     }
     return (ID)sym;
 }
@@ -10453,8 +10452,7 @@ lookup_sym_id(st_data_t str, st_data_t *data)
     }
     id = (ID)*data;
     if (!(id&ID_STATIC_SYM)&&id>tLAST_TOKEN) {
-	/* stick dynamic symbol */
-	rb_stick_dynamic_symbol((VALUE)id);
+	rb_pin_dynamic_symbol((VALUE)id);
     }
     return TRUE;
 }
@@ -10694,12 +10692,12 @@ rb_sym2id(VALUE x)
 	return RSHIFT((unsigned long)(x),RUBY_SPECIAL_SHIFT);
     }
     else {
-	return rb_stick_dynamic_symbol(x);
+	return rb_pin_dynamic_symbol(x);
     }
 }
 
 inline ID
-rb_sym2id_nostick(VALUE x)
+rb_sym2id_nopin(VALUE x)
 {
     if (STATIC_SYM_P(x)) {
 	return RSHIFT((unsigned long)(x),RUBY_SPECIAL_SHIFT);
@@ -10724,7 +10722,7 @@ rb_id2sym(ID x)
 VALUE
 rb_sym2str(VALUE sym)
 {
-    return rb_id2str(rb_sym2id_nostick(sym));
+    return rb_id2str(rb_sym2id_nopin(sym));
 }
 
 
