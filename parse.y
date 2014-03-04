@@ -10948,7 +10948,7 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
 
     sym_check_asciionly(name);
 
-    if (st_lookup(global_symbols.sym_id, (st_data_t)name, &id))
+    if (lookup_id_str((st_data_t)name, &id))
 	return (ID)id;
 
     if (rb_is_attrset_name(name)) {
