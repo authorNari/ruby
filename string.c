@@ -8345,10 +8345,9 @@ sym_inspect(VALUE sym)
     VALUE str;
     const char *ptr;
     long len;
-    ID id = SYM2ID(sym);
     char *dest;
 
-    sym = rb_id2str(id);
+    sym = rb_sym2str(sym);
     if (!rb_str_symname_p(sym)) {
 	str = rb_str_inspect(sym);
 	len = RSTRING_LEN(str);
@@ -8384,9 +8383,7 @@ sym_inspect(VALUE sym)
 VALUE
 rb_sym_to_s(VALUE sym)
 {
-    ID id = SYM2ID(sym);
-
-    return str_new_shared(rb_cString, rb_id2str(id));
+    return str_new_shared(rb_cString, rb_sym2str(sym));
 }
 
 
