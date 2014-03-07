@@ -352,7 +352,6 @@ rb_long2int_inline(long n)
 #define IMMEDIATE_P(x) ((VALUE)(x) & IMMEDIATE_MASK)
 
 ID rb_sym2id(VALUE);
-ID rb_sym2id_nopin(VALUE);
 VALUE rb_id2sym(ID);
 #define STATIC_SYM_P(x) (((VALUE)(x)&~((~(VALUE)0)<<RUBY_SPECIAL_SHIFT))==SYMBOL_FLAG)
 #define DYNAMIC_SYM_P(x) (!SPECIAL_CONST_P(x) && BUILTIN_TYPE(x) == (T_SYMBOL))

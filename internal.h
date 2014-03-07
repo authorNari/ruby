@@ -746,6 +746,7 @@ void rb_gc_mark_dsymbol(VALUE);
 void rb_gc_free_dsymbol(VALUE);
 VALUE rb_str_dynamic_intern(VALUE s);
 ID rb_check_id_nopin(volatile VALUE *);
+ID rb_sym2id_nopin(VALUE);
 #ifdef RUBY_ENCODING_H
 ID rb_check_id_cstr_nopin(const char *, long, rb_encoding *);
 #endif
