@@ -297,6 +297,12 @@ struct parser_params {
 #endif
 };
 
+#ifdef RIPPER
+#define intern_cstr_nopin(n,l,en) rb_intern3(n,l,en)
+#else
+static ID intern_cstr_nopin(const char *, long, rb_encoding *);
+#endif
+
 #define STR_NEW(p,n) rb_enc_str_new((p),(n),current_enc)
 #define STR_NEW0() rb_enc_str_new(0,0,current_enc)
 #define STR_NEW2(p) rb_enc_str_new((p),strlen(p),current_enc)
@@ -7999,7 +8005,7 @@ parser_yylex(struct parser_params *parser)
 		return '$';
 	    }
 	  gvar:
-	    set_yylval_name(rb_intern3(tok(), tokidx, current_enc));
+	    set_yylval_name(intern_cstr_nopin(tok(), tokidx, current_enc));
 	    return tGVAR;
 
 	  case '&':		/* $&: last match */
@@ -10457,8 +10463,8 @@ lookup_sym_id(st_data_t str, st_data_t *data)
     return TRUE;
 }
 
-ID
-rb_intern3(const char *name, long len, rb_encoding *enc)
+static ID
+intern_cstr_nopin(const char *name, long len, rb_encoding *enc)
 {
     st_data_t data;
     struct RString fake_str;
@@ -10466,11 +10472,24 @@ rb_intern3(const char *name, long len, rb_encoding *enc)
     rb_enc_associate(str, enc);
     OBJ_FREEZE(str);
 
-    if (lookup_sym_id(str, &data))
+    if (st_lookup(global_symbols.sym_id, str, &data))
 	return (ID)data;
 
     str = rb_enc_str_new(name, len, enc); /* make true string */
     return intern_str(str);
+}
+
+ID
+rb_intern3(const char *name, long len, rb_encoding *enc)
+{
+    ID id;
+
+    id = intern_cstr_nopin(name, len, enc);
+    if (!(id&ID_STATIC_SYM)&&id>tLAST_TOKEN) {
+	rb_pin_dynamic_symbol((VALUE)id);
+    }
+
+    return id;
 }
 
 static ID
