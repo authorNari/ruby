@@ -10438,6 +10438,8 @@ setup_fake_str(struct RString *fake_str, const char *name, long len)
     return (VALUE)fake_str;
 }
 
+#define ID_DYNAMIC_SYM_P(id) (!(id&ID_STATIC_SYM)&&id>tLAST_TOKEN)
+
 ID
 rb_pin_dynamic_symbol(VALUE sym)
 {
@@ -10457,7 +10459,7 @@ lookup_sym_id(st_data_t str, st_data_t *data)
 	return FALSE;
     }
     id = (ID)*data;
-    if (!(id&ID_STATIC_SYM)&&id>tLAST_TOKEN) {
+    if (ID_DYNAMIC_SYM_P(id)) {
 	rb_pin_dynamic_symbol((VALUE)id);
     }
     return TRUE;
@@ -10485,7 +10487,7 @@ rb_intern3(const char *name, long len, rb_encoding *enc)
     ID id;
 
     id = intern_cstr_nopin(name, len, enc);
-    if (!(id&ID_STATIC_SYM)&&id>tLAST_TOKEN) {
+    if (ID_DYNAMIC_SYM_P(id)) {
 	rb_pin_dynamic_symbol((VALUE)id);
     }
 
@@ -10697,7 +10699,7 @@ lookup_id_str(ID id, st_data_t *data)
     if (st_lookup(global_symbols.id_str, id, data)) {
 	return TRUE;
     }
-    if (!(id&ID_STATIC_SYM)) {
+    if (ID_DYNAMIC_SYM_P(id)) {
 	*data = RSYMBOL(id)->fstr;
 	return TRUE;
     }
@@ -10729,7 +10731,7 @@ rb_sym2id_nopin(VALUE x)
 inline VALUE
 rb_id2sym(ID x)
 {
-    if (x&ID_STATIC_SYM||x<tLAST_TOKEN) {
+    if (!ID_DYNAMIC_SYM_P(x)) {
 	return ((VALUE)(x)<<RUBY_SPECIAL_SHIFT)|SYMBOL_FLAG;
     }
     else {
@@ -10921,7 +10923,7 @@ rb_check_id(volatile VALUE *namep)
     ID id;
 
     id = rb_check_id_nopin(namep);
-    if (id && !(id & ID_STATIC_SYM || id < tLAST_TOKEN)) {
+    if (ID_DYNAMIC_SYM_P(id)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
 
@@ -10934,7 +10936,7 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
     ID id;
 
     id = rb_check_id_cstr_nopin(ptr, len, enc);
-    if (id && !(id & ID_STATIC_SYM || id < tLAST_TOKEN)) {
+    if (ID_DYNAMIC_SYM_P(id)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
 
