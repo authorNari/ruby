@@ -745,10 +745,10 @@ ID rb_make_internal_id(void);
 void rb_gc_mark_dsymbol(VALUE);
 void rb_gc_free_dsymbol(VALUE);
 VALUE rb_str_dynamic_intern(VALUE s);
-ID rb_check_id_nopin(volatile VALUE *);
-ID rb_sym2id_nopin(VALUE);
+ID rb_check_id_without_pindown(volatile VALUE *);
+ID rb_sym2id_without_pindown(VALUE);
 #ifdef RUBY_ENCODING_H
-ID rb_check_id_cstr_nopin(const char *, long, rb_encoding *);
+ID rb_check_id_cstr_without_pindown(const char *, long, rb_encoding *);
 #endif
 
 /* proc.c */

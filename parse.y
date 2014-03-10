@@ -298,16 +298,16 @@ struct parser_params {
 };
 
 #ifdef RIPPER
-#define intern_cstr_nopin(n,l,en) rb_intern3(n,l,en)
+#define intern_cstr_without_pindown(n,l,en) rb_intern3(n,l,en)
 #else
-static ID intern_cstr_nopin(const char *, long, rb_encoding *);
+static ID intern_cstr_without_pindown(const char *, long, rb_encoding *);
 #endif
 
 #define STR_NEW(p,n) rb_enc_str_new((p),(n),current_enc)
 #define STR_NEW0() rb_enc_str_new(0,0,current_enc)
 #define STR_NEW2(p) rb_enc_str_new((p),strlen(p),current_enc)
 #define STR_NEW3(p,n,e,func) parser_str_new((p),(n),(e),(func),current_enc)
-#define TOK_INTERN() rb_intern3(tok(), toklen(), current_enc)
+#define TOK_INTERN() intern_cstr_without_pindown(tok(), toklen(), current_enc)
 
 static int parser_yyerror(struct parser_params*, const char*);
 #define yyerror(msg) parser_yyerror(parser, (msg))
@@ -8005,7 +8005,7 @@ parser_yylex(struct parser_params *parser)
 		return '$';
 	    }
 	  gvar:
-	    set_yylval_name(intern_cstr_nopin(tok(), tokidx, current_enc));
+	    set_yylval_name(intern_cstr_without_pindown(tok(), tokidx, current_enc));
 	    return tGVAR;
 
 	  case '&':		/* $&: last match */
@@ -10466,7 +10466,7 @@ lookup_sym_id(st_data_t str, st_data_t *data)
 }
 
 static ID
-intern_cstr_nopin(const char *name, long len, rb_encoding *enc)
+intern_cstr_without_pindown(const char *name, long len, rb_encoding *enc)
 {
     st_data_t data;
     struct RString fake_str;
@@ -10486,7 +10486,7 @@ rb_intern3(const char *name, long len, rb_encoding *enc)
 {
     ID id;
 
-    id = intern_cstr_nopin(name, len, enc);
+    id = intern_cstr_without_pindown(name, len, enc);
     if (ID_DYNAMIC_SYM_P(id)) {
 	rb_pin_dynamic_symbol((VALUE)id);
     }
@@ -10718,7 +10718,7 @@ rb_sym2id(VALUE x)
 }
 
 inline ID
-rb_sym2id_nopin(VALUE x)
+rb_sym2id_without_pindown(VALUE x)
 {
     if (STATIC_SYM_P(x)) {
 	return RSHIFT((unsigned long)(x),RUBY_SPECIAL_SHIFT);
@@ -10743,7 +10743,7 @@ rb_id2sym(ID x)
 VALUE
 rb_sym2str(VALUE sym)
 {
-    return rb_id2str(rb_sym2id_nopin(sym));
+    return rb_id2str(rb_sym2id_without_pindown(sym));
 }
 
 
@@ -10922,7 +10922,7 @@ rb_check_id(volatile VALUE *namep)
 {
     ID id;
 
-    id = rb_check_id_nopin(namep);
+    id = rb_check_id_without_pindown(namep);
     if (ID_DYNAMIC_SYM_P(id)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
@@ -10935,7 +10935,7 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
 {
     ID id;
 
-    id = rb_check_id_cstr_nopin(ptr, len, enc);
+    id = rb_check_id_cstr_without_pindown(ptr, len, enc);
     if (ID_DYNAMIC_SYM_P(id)) {
         rb_pin_dynamic_symbol((VALUE)id);
     }
@@ -10944,14 +10944,14 @@ rb_check_id_cstr(const char *ptr, long len, rb_encoding *enc)
 }
 
 ID
-rb_check_id_nopin(volatile VALUE *namep)
+rb_check_id_without_pindown(volatile VALUE *namep)
 {
     st_data_t id;
     VALUE tmp;
     VALUE name = *namep;
 
     if (SYMBOL_P(name)) {
-	return rb_sym2id_nopin(name);
+	return rb_sym2id_without_pindown(name);
     }
     else if (!RB_TYPE_P(name, T_STRING)) {
 	tmp = rb_check_string_type(name);
@@ -10986,7 +10986,7 @@ rb_check_id_nopin(volatile VALUE *namep)
 }
 
 ID
-rb_check_id_cstr_nopin(const char *ptr, long len, rb_encoding *enc)
+rb_check_id_cstr_without_pindown(const char *ptr, long len, rb_encoding *enc)
 {
     st_data_t id;
     struct RString fake_str;
