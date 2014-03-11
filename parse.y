@@ -9938,7 +9938,7 @@ reg_named_capture_assign_iter(const OnigUChar *name, const OnigUChar *name_end,
 	!rb_enc_symname2_p(s, len, enc)) {
         return ST_CONTINUE;
     }
-    var = rb_intern3(s, len, enc);
+    var = intern_cstr_without_pindown(s, len, enc);
     if (dvar_defined(var) || local_id(var)) {
         rb_warningS("named capture conflicts a local variable - %s",
                     rb_id2name(var));
