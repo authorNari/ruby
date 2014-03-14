@@ -3943,6 +3943,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr)
 
       case T_FLOAT:
       case T_BIGNUM:
+      case T_SYMBOL:
 	break;
 
       case T_MATCH:
@@ -3971,13 +3972,6 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr)
 	    while (len--) {
 		gc_mark(objspace, *ptr++);
 	    }
-	}
-	break;
-
-      case T_SYMBOL:
-	{
-            ptr = obj->as.symbol.fstr;
-            goto again;
 	}
 	break;
 

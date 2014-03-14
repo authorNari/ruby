@@ -10652,6 +10652,7 @@ void
 rb_gc_free_dsymbol(VALUE ptr)
 {
     st_delete(global_symbols.sym_id, (st_data_t *)&RSYMBOL(ptr)->fstr, 0);
+    st_delete(global_symbols.id_str, (st_data_t *)&ptr, 0);
     RSYMBOL(ptr)->fstr = (VALUE)NULL;
 }
 
@@ -10684,23 +10685,25 @@ rb_str_dynamic_intern(VALUE s)
     RSYMBOL(dsym)->fstr = str;
     RSYMBOL(dsym)->type = type;
 
+    st_add_direct(global_symbols.sym_id, (st_data_t)str, (ID)dsym);
+    st_add_direct(global_symbols.id_str, (ID)dsym, (st_data_t)str);
+    global_symbols.minor_marked = 0;
+
     if (RUBY_DTRACE_SYMBOL_CREATE_ENABLED()) {
 	RUBY_DTRACE_SYMBOL_CREATE(RSTRING_PTR(str), rb_sourcefile(), rb_sourceline());
     }
 
-    st_add_direct(global_symbols.sym_id, (st_data_t)str, dsym);
-    global_symbols.minor_marked = 0;
     return dsym;
 }
 
 static int
 lookup_id_str(ID id, st_data_t *data)
 {
-    if (st_lookup(global_symbols.id_str, id, data)) {
-	return TRUE;
-    }
     if (ID_DYNAMIC_SYM_P(id)) {
 	*data = RSYMBOL(id)->fstr;
+	return TRUE;
+    }
+    if (st_lookup(global_symbols.id_str, id, data)) {
 	return TRUE;
     }
     return FALSE;
